@@ -37,6 +37,9 @@ export class BIMRenderer {
     this.occlusionUpdateInterval = 10
     this.frameCounter = 0
     this.measurementObjects = []
+    this.annotationPins = new Map()
+    this.onAnnotationClick = null
+    this.onAnnotationDblClick = null
 
     this._init()
   }
@@ -101,6 +104,7 @@ export class BIMRenderer {
     const canvas = this.renderer.domElement
 
     canvas.addEventListener('click', (e) => this._onClick(e))
+    canvas.addEventListener('dblclick', (e) => this._onDblClick(e))
     canvas.addEventListener('mousemove', (e) => this._onMouseMove(e))
     canvas.addEventListener('contextmenu', (e) => this._onContextMenu(e))
     canvas.addEventListener('mousedown', (e) => this._onMouseDown(e))
@@ -122,6 +126,12 @@ export class BIMRenderer {
     this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
 
     this.raycaster.setFromCamera(this.mouse, this.camera)
+
+    const pinId = this.getAnnotationPinAtPosition(this.mouse)
+    if (pinId && this.onAnnotationClick) {
+      this.onAnnotationClick(pinId)
+      return
+    }
 
     if (this.measureMode) {
       const intersects = this.raycaster.intersectObjects(
@@ -172,6 +182,45 @@ export class BIMRenderer {
     const rect = this.renderer.domElement.getBoundingClientRect()
     this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
     this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+  }
+
+  _onDblClick(event) {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+    this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+
+    this.raycaster.setFromCamera(this.mouse, this.camera)
+
+    const pinId = this.getAnnotationPinAtPosition(this.mouse)
+    if (pinId && this.onAnnotationDblClick) {
+      this.onAnnotationDblClick(pinId)
+      return
+    }
+
+    const meshes = Array.from(this.elementMeshes.values()).filter(m => m.visible)
+    const intersects = this.raycaster.intersectObjects(meshes, false)
+
+    if (intersects.length > 0) {
+      const hit = intersects[0]
+      const point = hit.point
+      let elementId = hit.object.userData.elementId
+
+      if (hit.object.isInstancedMesh && hit.instanceId !== undefined) {
+        const instancedData = hit.object.userData.instances
+        if (instancedData && instancedData[hit.instanceId]) {
+          elementId = instancedData[hit.instanceId].elementId
+        }
+      }
+
+      if (this.onAnnotationDblClick) {
+        this.onAnnotationDblClick(null, elementId, { x: point.x, y: point.y, z: point.z })
+      }
+    } else {
+      const groundPoint = this.getGroundPointAtPosition(this.mouse)
+      if (groundPoint && this.onAnnotationDblClick) {
+        this.onAnnotationDblClick(null, null, groundPoint)
+      }
+    }
   }
 
   _onContextMenu(event) {
@@ -991,6 +1040,147 @@ export class BIMRenderer {
     return sphere
   }
 
+  addAnnotationPin(annotation, onClick) {
+    const existing = this.annotationPins.get(annotation.id)
+    if (existing) {
+      this.removeAnnotationPin(annotation.id)
+    }
+
+    const color = this._getAnnotationColor(annotation.priority, annotation.status)
+    const opacity = annotation.status === 'closed' ? 0.4 : 1.0
+
+    const group = new THREE.Group()
+    group.userData = { annotationId: annotation.id, isAnnotationPin: true }
+
+    const pinHeight = 600
+    const headRadius = 200
+    const stickRadius = 40
+
+    const stickGeo = new THREE.CylinderGeometry(stickRadius, stickRadius, pinHeight, 8)
+    const stickMat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: opacity * 0.8,
+      depthTest: false
+    })
+    const stick = new THREE.Mesh(stickGeo, stickMat)
+    stick.position.y = pinHeight / 2
+    stick.renderOrder = 998
+    group.add(stick)
+
+    const headGeo = new THREE.SphereGeometry(headRadius, 16, 16)
+    const headMat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      depthTest: false
+    })
+    const head = new THREE.Mesh(headGeo, headMat)
+    head.position.y = pinHeight + headRadius
+    head.renderOrder = 999
+    head.userData = { annotationId: annotation.id, isAnnotationPinHead: true }
+    group.add(head)
+
+    const ringGeo = new THREE.RingGeometry(headRadius + 30, headRadius + 60, 32)
+    const ringMat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: opacity * 0.5,
+      depthTest: false,
+      side: THREE.DoubleSide
+    })
+    const ring = new THREE.Mesh(ringGeo, ringMat)
+    ring.position.y = pinHeight + headRadius
+    ring.rotation.x = -Math.PI / 2
+    ring.renderOrder = 999
+    group.add(ring)
+
+    group.position.set(annotation.position[0], annotation.position[1], annotation.position[2])
+
+    this.scene.add(group)
+    this.annotationPins.set(annotation.id, group)
+
+    return group
+  }
+
+  removeAnnotationPin(annotationId) {
+    const group = this.annotationPins.get(annotationId)
+    if (group) {
+      this.scene.remove(group)
+      group.traverse(child => {
+        if (child.geometry) child.geometry.dispose()
+        if (child.material) child.material.dispose()
+      })
+      this.annotationPins.delete(annotationId)
+    }
+  }
+
+  updateAnnotationPin(annotation) {
+    const group = this.annotationPins.get(annotation.id)
+    if (!group) return
+
+    const color = this._getAnnotationColor(annotation.priority, annotation.status)
+    const opacity = annotation.status === 'closed' ? 0.4 : 1.0
+
+    group.traverse(child => {
+      if (child.isMesh && child.material) {
+        child.material.color.setHex(color)
+        child.material.opacity = opacity * (child.userData.isAnnotationPinHead ? 1.0 : 0.8)
+        child.material.needsUpdate = true
+      }
+    })
+  }
+
+  clearAnnotationPins() {
+    for (const [id] of this.annotationPins) {
+      this.removeAnnotationPin(id)
+    }
+  }
+
+  _getAnnotationColor(priority, status) {
+    const colors = {
+      urgent: 0xff4444,
+      normal: 0x409eff,
+      low: 0x909399
+    }
+    return colors[priority] || 0x409eff
+  }
+
+  getAnnotationPinAtPosition(mouse) {
+    this.raycaster.setFromCamera(mouse, this.camera)
+
+    const pinMeshes = []
+    for (const [, group] of this.annotationPins) {
+      group.traverse(child => {
+        if (child.isMesh) {
+          pinMeshes.push(child)
+        }
+      })
+    }
+
+    if (pinMeshes.length === 0) return null
+
+    const intersects = this.raycaster.intersectObjects(pinMeshes, false)
+    if (intersects.length > 0) {
+      let obj = intersects[0].object
+      while (obj && !obj.userData.annotationId) {
+        obj = obj.parent
+      }
+      if (obj && obj.userData.annotationId) {
+        return obj.userData.annotationId
+      }
+    }
+    return null
+  }
+
+  getGroundPointAtPosition(mouse) {
+    this.raycaster.setFromCamera(mouse, this.camera)
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+    const point = new THREE.Vector3()
+    this.raycaster.ray.intersectPlane(plane, point)
+    return point ? { x: point.x, y: point.y, z: point.z } : null
+  }
+
   takeScreenshot() {
     this.renderer.render(this.scene, this.camera)
     return this.renderer.domElement.toDataURL('image/png')
@@ -1025,6 +1215,7 @@ export class BIMRenderer {
 
     this.clearMeasurements()
     this.clearHighlight()
+    this.clearAnnotationPins()
     this.renderer.dispose()
     this.controls.dispose()
     this.elementMeshes.clear()

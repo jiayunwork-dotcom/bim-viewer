@@ -28,8 +28,11 @@ services:
     environment:
       DATABASE_URL: postgres://bimuser:bimpanass@postgres:5432/bimviewer?sslmode=disable
       PORT: "8080"
+      UPLOAD_DIR: /data/uploads
     ports:
       - "8080:8080"
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,6 +55,7 @@ services:
 
 volumes:
   pgdata:
+  uploads:
 
 networks:
   bim-network:

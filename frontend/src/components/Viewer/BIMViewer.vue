@@ -86,6 +86,10 @@
       <div class="right-panel" v-show="viewerStore.activePanel === 'property'">
         <PropertyPanel />
       </div>
+
+      <div class="right-panel annotation-right-panel" v-show="viewerStore.activePanel === 'annotation'">
+        <AnnotationPanel :renderer="renderer" :model-id="modelStore.currentModel?.id" @pin-click="handleAnnotationPinClick" />
+      </div>
     </div>
 
     <div class="bottom-panel" v-show="viewerStore.activePanel === 'collision'">
@@ -121,6 +125,16 @@
           @click="viewerStore.setActivePanel('collision')"
         >
           <el-icon><Warning /></el-icon>
+        </el-button>
+      </el-tooltip>
+      <el-tooltip content="标注" placement="left">
+        <el-button
+          :type="viewerStore.activePanel === 'annotation' ? 'primary' : 'default'"
+          size="small"
+          circle
+          @click="viewerStore.setActivePanel('annotation')"
+        >
+          <el-icon><Location /></el-icon>
         </el-button>
       </el-tooltip>
     </div>
@@ -184,10 +198,12 @@ import { useViewerStore } from '../../stores/viewer'
 import { useClipStore } from '../../stores/clip'
 import { useMeasureStore } from '../../stores/measure'
 import { useCollisionStore } from '../../stores/collision'
+import { useAnnotationStore } from '../../stores/annotation'
 import { BIMRenderer } from '../../utils/BIMRenderer'
 import TreePanel from '../TreePanel/TreePanel.vue'
 import PropertyPanel from '../PropertyPanel/PropertyPanel.vue'
 import CollisionPanel from '../CollisionPanel/CollisionPanel.vue'
+import AnnotationPanel from '../AnnotationPanel/AnnotationPanel.vue'
 import ContextMenu from '../ContextMenu/ContextMenu.vue'
 import * as THREE from 'three'
 import { ElMessage } from 'element-plus'
@@ -197,6 +213,7 @@ const modelStore = useModelStore()
 const viewerStore = useViewerStore()
 const clipStore = useClipStore()
 const measureStore = useMeasureStore()
+const annotationStore = useAnnotationStore()
 
 const viewerContainer = ref(null)
 const canvasContainer = ref(null)
@@ -470,6 +487,17 @@ function takeScreenshot() {
     link.click()
   }
 }
+
+function handleAnnotationPinClick(annotation) {
+  viewerStore.setActivePanel('annotation')
+  if (renderer.value && annotation.position) {
+    const pos = annotation.position
+    renderer.value.flyTo(
+      { x: pos[0] + 2000, y: pos[1] + 3000, z: pos[2] + 2000 },
+      { x: pos[0], y: pos[1], z: pos[2] }
+    )
+  }
+}
 </script>
 
 <style scoped>
@@ -533,6 +561,10 @@ function takeScreenshot() {
   border-left: 1px solid #2a2a4a;
   overflow-y: auto;
   z-index: 5;
+}
+
+.annotation-right-panel {
+  width: 400px;
 }
 
 .bottom-panel {
