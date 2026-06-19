@@ -78,7 +78,7 @@
 
     <div class="viewer-content">
       <div class="side-panel" v-show="viewerStore.activePanel === 'tree'" :class="{ collapsed: !viewerStore.activePanel }">
-        <TreePanel />
+        <TreePanel @visibility-change="handleTreeVisibilityChange" />
       </div>
 
       <div class="canvas-area" ref="canvasContainer" />
@@ -392,6 +392,13 @@ function showAll() {
 function clearSelection() {
   modelStore.clearSelection()
   renderer.value.clearHighlight()
+}
+
+function handleTreeVisibilityChange({ ids, visible }) {
+  if (!renderer.value) return
+  for (const id of ids) {
+    renderer.value.setElementVisibility(id, visible)
+  }
 }
 
 function toggleCategoryFilter(category) {

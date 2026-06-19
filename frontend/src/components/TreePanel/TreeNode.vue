@@ -35,6 +35,7 @@
         :key="child.id"
         :node="child"
         :depth="depth + 1"
+        @visibility-change="onChildVisibilityChange"
       />
     </div>
   </div>
@@ -49,6 +50,8 @@ const props = defineProps({
   node: { type: Object, required: true },
   depth: { type: Number, default: 0 }
 })
+
+const emit = defineEmits(['visibility-change'])
 
 const modelStore = useModelStore()
 const viewerStore = useViewerStore()
@@ -80,6 +83,24 @@ function formatType(type) {
   return type.replace('Ifc', '')
 }
 
+function collectDescendantElementIds(node, ids = []) {
+  if (node.type === 'IfcBuildingStorey') {
+    const floorElements = modelStore.elements.filter(e => e.floorName === node.name)
+    for (const e of floorElements) {
+      ids.push(e.id)
+    }
+  } else if (!node.children || node.children.length === 0) {
+    const direct = modelStore.elements.find(e => e.id === node.id)
+    if (direct) ids.push(direct.id)
+  }
+  if (node.children) {
+    for (const child of node.children) {
+      collectDescendantElementIds(child, ids)
+    }
+  }
+  return ids
+}
+
 function onNodeClick() {
   modelStore.selectElement(props.node.id)
 }
@@ -89,11 +110,12 @@ function onContextMenu(e) {
 }
 
 function onVisibilityChange(val) {
-  if (val) {
-    viewerStore.hiddenElementIds.delete(props.node.id)
-  } else {
-    viewerStore.hiddenElementIds.add(props.node.id)
-  }
+  const affectedIds = collectDescendantElementIds(props.node)
+  emit('visibility-change', { ids: affectedIds, visible: val })
+}
+
+function onChildVisibilityChange(payload) {
+  emit('visibility-change', payload)
 }
 </script>
 

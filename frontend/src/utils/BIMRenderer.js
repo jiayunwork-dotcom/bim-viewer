@@ -12,10 +12,10 @@ export class BIMRenderer {
     this.mouse = new THREE.Vector2()
     this.elementMeshes = new Map()
     this.elementMeshesByLOD = new Map()
+    this.elementInstanceInfo = new Map()
     this.instanceGroups = new Map()
     this.clippingPlanes = []
-    this.highlightMesh = null
-    this.boxHelper = null
+    this.highlightObjects = []
     this.animationId = null
     this.onElementClick = null
     this.onElementHover = null
@@ -413,7 +413,11 @@ export class BIMRenderer {
       for (let lod = 0; lod < lodMeshes.length; lod++) {
         const m = lodMeshes[lod]
         if (m) {
-          m.visible = (lod === targetLOD) && !m.userData.occluded
+          if (m.userData.forceHidden) {
+            m.visible = false
+          } else {
+            m.visible = (lod === targetLOD) && !m.userData.occluded
+          }
         }
       }
     }
@@ -443,23 +447,30 @@ export class BIMRenderer {
   }
 
   addElementMesh(elementId, geometry, material, position) {
-    const mesh = new THREE.Mesh(geometry, material)
-    mesh.userData.elementId = elementId
-    if (position) {
-      mesh.position.set(position.x, position.y, position.z)
-    }
-    mesh.castShadow = false
-    mesh.receiveShadow = false
-    this.elementMeshes.set(elementId, mesh)
-
     if (!this.elementMeshesByLOD.has(elementId)) {
       this.elementMeshesByLOD.set(elementId, [])
     }
-    this.elementMeshesByLOD.get(elementId)[0] = mesh
-    mesh.userData.lod = 0
 
-    this.scene.add(mesh)
-    return mesh
+    for (let lod = 0; lod < 3; lod++) {
+      const lodGeo = this._createLODGeometry(geometry, lod)
+      const mesh = new THREE.Mesh(lodGeo, material)
+      mesh.userData.elementId = elementId
+      mesh.userData.lod = lod
+      if (position) {
+        mesh.position.set(position.x, position.y, position.z)
+      }
+      mesh.castShadow = false
+      mesh.receiveShadow = false
+      mesh.frustumCulled = false
+      mesh.visible = (lod === 0)
+      this.elementMeshesByLOD.get(elementId)[lod] = mesh
+      if (lod === 0) {
+        this.elementMeshes.set(elementId, mesh)
+      }
+      this.scene.add(mesh)
+    }
+
+    return this.elementMeshesByLOD.get(elementId)[0]
   }
 
   addInstancedMesh(geometryHash, geometry, material, instances) {
@@ -484,6 +495,16 @@ export class BIMRenderer {
         }
         dummy.updateMatrix()
         instancedMesh.setMatrixAt(i, dummy.matrix)
+
+        if (lod === 0) {
+          this.elementInstanceInfo.set(inst.elementId, {
+            geometryHash,
+            instanceIndex: i,
+            baseScale: { ...dummy.scale },
+            basePosition: { ...dummy.position },
+            baseRotation: { ...dummy.rotation }
+          })
+        }
       }
 
       instancedMesh.instanceMatrix.needsUpdate = true
@@ -510,31 +531,47 @@ export class BIMRenderer {
   _createLODGeometry(baseGeometry, lod) {
     if (lod === 0) return baseGeometry
 
-    const simplified = baseGeometry.clone()
+    const geo = baseGeometry
+    if (geo instanceof THREE.CylinderGeometry) {
+      const params = geo.parameters
+      const segments = lod === 1 ? 8 : 4
+      return new THREE.CylinderGeometry(
+        params.radiusTop, params.radiusBottom, params.height,
+        segments, 1, params.openEnded
+      )
+    }
 
-    if (simplified instanceof THREE.BufferGeometry) {
-      const pos = simplified.attributes.position
-      if (pos && pos.count > 0) {
-        const reduceFactor = lod === 1 ? 0.5 : 0.2
-        const targetCount = Math.max(4, Math.floor(pos.count * reduceFactor))
-
-        const newPositions = new Float32Array(targetCount * 3)
-        const step = Math.max(1, Math.floor(pos.count / targetCount))
-
-        let idx = 0
-        for (let i = 0; i < pos.count && idx < targetCount; i += step) {
-          newPositions[idx * 3] = pos.getX(i)
-          newPositions[idx * 3 + 1] = pos.getY(i)
-          newPositions[idx * 3 + 2] = pos.getZ(i)
-          idx++
-        }
-
-        simplified.setAttribute('position', new THREE.BufferAttribute(newPositions, 3))
-        simplified.computeVertexNormals()
+    if (geo instanceof THREE.BoxGeometry) {
+      if (lod === 1) {
+        const params = geo.parameters
+        return new THREE.BoxGeometry(params.width, params.height, params.depth, 1, 1, 1)
+      } else {
+        const params = geo.parameters
+        const w = params.width * 0.98
+        const h = params.height * 0.98
+        const d = params.depth * 0.98
+        const simple = new THREE.BufferGeometry()
+        const hw = w / 2, hh = h / 2, hd = d / 2
+        const positions = new Float32Array([
+          -hw, -hh, -hd,  hw, -hh, -hd,  hw, hh, -hd,  -hw, hh, -hd,
+          -hw, -hh, hd,   hw, -hh, hd,   hw, hh, hd,   -hw, hh, hd
+        ])
+        const indices = [
+          0,1,2, 0,2,3,
+          4,6,5, 4,7,6,
+          0,4,5, 0,5,1,
+          2,6,7, 2,7,3,
+          0,3,7, 0,7,4,
+          1,5,6, 1,6,2
+        ]
+        simple.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+        simple.setIndex(indices)
+        simple.computeVertexNormals()
+        return simple
       }
     }
 
-    return simplified
+    return baseGeometry.clone()
   }
 
   highlightElement(elementId, color = 0x00aaff) {
@@ -559,23 +596,21 @@ export class BIMRenderer {
       const scale = new THREE.Vector3()
       matrix.decompose(pos, quat, scale)
 
-      let geo
-      if (sourceMesh.geometry instanceof THREE.CylinderGeometry) {
-        geo = new THREE.EdgesGeometry(sourceMesh.geometry)
-      } else {
-        geo = new THREE.EdgesGeometry(sourceMesh.geometry)
-      }
+      const geo = new THREE.EdgesGeometry(sourceMesh.geometry)
       const edgesMat = new THREE.LineBasicMaterial({ color, linewidth: 2 })
       const wireframe = new THREE.LineSegments(geo, edgesMat)
       wireframe.position.copy(pos)
       wireframe.quaternion.copy(quat)
       wireframe.scale.copy(scale).multiplyScalar(1.03)
-      this.highlightMesh = wireframe
-      this.scene.add(this.highlightMesh)
+      wireframe.userData.isHighlight = true
+      this.scene.add(wireframe)
+      this.highlightObjects.push(wireframe)
 
       const bbox = new THREE.Box3().setFromObject(wireframe)
-      this.boxHelper = new THREE.Box3Helper(bbox, color)
-      this.scene.add(this.boxHelper)
+      const boxHelper = new THREE.Box3Helper(bbox, color)
+      boxHelper.userData.isHighlight = true
+      this.scene.add(boxHelper)
+      this.highlightObjects.push(boxHelper)
     } else {
       const edges = new THREE.EdgesGeometry(sourceMesh.geometry)
       const lineMat = new THREE.LineBasicMaterial({ color, linewidth: 2 })
@@ -583,33 +618,65 @@ export class BIMRenderer {
       wireframe.position.copy(sourceMesh.position)
       wireframe.rotation.copy(sourceMesh.rotation)
       wireframe.scale.copy(sourceMesh.scale).multiplyScalar(1.03)
-      this.highlightMesh = wireframe
-      this.scene.add(this.highlightMesh)
+      wireframe.userData.isHighlight = true
+      this.scene.add(wireframe)
+      this.highlightObjects.push(wireframe)
 
       const bbox = new THREE.Box3().setFromObject(sourceMesh)
-      this.boxHelper = new THREE.Box3Helper(bbox, color)
-      this.scene.add(this.boxHelper)
+      const boxHelper = new THREE.Box3Helper(bbox, color)
+      boxHelper.userData.isHighlight = true
+      this.scene.add(boxHelper)
+      this.highlightObjects.push(boxHelper)
     }
   }
 
   clearHighlight() {
-    if (this.highlightMesh) {
-      this.scene.remove(this.highlightMesh)
-      this.highlightMesh = null
+    for (const obj of this.highlightObjects) {
+      this.scene.remove(obj)
+      if (obj.geometry) obj.geometry.dispose()
+      if (obj.material) {
+        if (Array.isArray(obj.material)) {
+          for (const m of obj.material) m.dispose()
+        } else {
+          obj.material.dispose()
+        }
+      }
     }
-    if (this.boxHelper) {
-      this.scene.remove(this.boxHelper)
-      this.boxHelper = null
-    }
+    this.highlightObjects = []
   }
 
   setElementVisibility(elementId, visible) {
+    const instInfo = this.elementInstanceInfo.get(elementId)
+    if (instInfo) {
+      const { geometryHash, instanceIndex, baseScale, basePosition, baseRotation } = instInfo
+      const dummy = new THREE.Object3D()
+      dummy.position.set(basePosition.x, basePosition.y, basePosition.z)
+      dummy.rotation.set(baseRotation.x, baseRotation.y, baseRotation.z)
+      if (visible) {
+        dummy.scale.set(baseScale.x, baseScale.y, baseScale.z)
+      } else {
+        dummy.scale.set(0, 0, 0)
+      }
+      dummy.updateMatrix()
+
+      for (let lod = 0; lod < 3; lod++) {
+        const mesh = this.instanceGroups.get(`${geometryHash}_lod${lod}`)
+        if (mesh) {
+          mesh.setMatrixAt(instanceIndex, dummy.matrix)
+          mesh.instanceMatrix.needsUpdate = true
+        }
+      }
+      return
+    }
+
     const lodMeshes = this.elementMeshesByLOD.get(elementId)
     if (lodMeshes) {
       for (const m of lodMeshes) {
         if (m) {
-          m.userData.forceVisible = visible
-          m.visible = visible
+          m.userData.forceHidden = !visible
+          if (!visible) {
+            m.visible = false
+          }
         }
       }
     }
@@ -636,23 +703,65 @@ export class BIMRenderer {
 
   isolateElements(elementIds) {
     const idSet = new Set(elementIds)
+
+    for (const [elementId, instInfo] of this.elementInstanceInfo) {
+      const { geometryHash, instanceIndex, baseScale, basePosition, baseRotation } = instInfo
+      const shouldShow = idSet.has(elementId)
+      const dummy = new THREE.Object3D()
+      dummy.position.set(basePosition.x, basePosition.y, basePosition.z)
+      dummy.rotation.set(baseRotation.x, baseRotation.y, baseRotation.z)
+      if (shouldShow) {
+        dummy.scale.set(baseScale.x, baseScale.y, baseScale.z)
+      } else {
+        dummy.scale.set(0, 0, 0)
+      }
+      dummy.updateMatrix()
+      for (let lod = 0; lod < 3; lod++) {
+        const mesh = this.instanceGroups.get(`${geometryHash}_lod${lod}`)
+        if (mesh) {
+          mesh.setMatrixAt(instanceIndex, dummy.matrix)
+          mesh.instanceMatrix.needsUpdate = true
+        }
+      }
+    }
+
     for (const [id, lodMeshes] of this.elementMeshesByLOD) {
       const shouldShow = idSet.has(id)
+      const hasInst = this.elementInstanceInfo.has(id)
+      if (hasInst) continue
       for (const m of lodMeshes) {
         if (m) {
-          m.userData.forceVisible = shouldShow
-          m.visible = shouldShow
+          m.userData.forceHidden = !shouldShow
+          if (!shouldShow) m.visible = false
         }
       }
     }
   }
 
   showAllElements() {
+    for (const [elementId, instInfo] of this.elementInstanceInfo) {
+      const { geometryHash, instanceIndex, baseScale, basePosition, baseRotation } = instInfo
+      const dummy = new THREE.Object3D()
+      dummy.position.set(basePosition.x, basePosition.y, basePosition.z)
+      dummy.rotation.set(baseRotation.x, baseRotation.y, baseRotation.z)
+      dummy.scale.set(baseScale.x, baseScale.y, baseScale.z)
+      dummy.updateMatrix()
+      for (let lod = 0; lod < 3; lod++) {
+        const mesh = this.instanceGroups.get(`${geometryHash}_lod${lod}`)
+        if (mesh) {
+          mesh.setMatrixAt(instanceIndex, dummy.matrix)
+          mesh.instanceMatrix.needsUpdate = true
+        }
+      }
+    }
+
     for (const [id, lodMeshes] of this.elementMeshesByLOD) {
-      for (const m of lodMeshes) {
+      for (let lod = 0; lod < lodMeshes.length; lod++) {
+        const m = lodMeshes[lod]
         if (m) {
-          m.userData.forceVisible = false
+          m.userData.forceHidden = false
           m.userData.occluded = false
+          m.visible = (lod === 0)
         }
       }
     }
@@ -900,10 +1009,12 @@ export class BIMRenderer {
     }
 
     this.clearMeasurements()
+    this.clearHighlight()
     this.renderer.dispose()
     this.controls.dispose()
     this.elementMeshes.clear()
     this.elementMeshesByLOD.clear()
+    this.elementInstanceInfo.clear()
     this.instanceGroups.clear()
   }
 }

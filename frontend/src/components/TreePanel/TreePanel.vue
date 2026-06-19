@@ -13,7 +13,7 @@
     </div>
     <div class="tree-content">
       <div v-for="node in filteredTree" :key="node.id">
-        <TreeNode :node="node" :depth="0" />
+        <TreeNode :node="node" :depth="0" @visibility-change="onVisibilityChange" />
       </div>
       <div v-if="!filteredTree.length" class="empty-text">暂无模型结构数据</div>
     </div>
@@ -24,6 +24,8 @@
 import { ref, computed } from 'vue'
 import { useModelStore } from '../../stores/model'
 import TreeNode from './TreeNode.vue'
+
+const emit = defineEmits(['visibility-change'])
 
 const modelStore = useModelStore()
 const searchText = ref('')
@@ -48,6 +50,10 @@ function filterTree(nodes, query) {
     }
   }
   return result
+}
+
+function onVisibilityChange(payload) {
+  emit('visibility-change', payload)
 }
 </script>
 
