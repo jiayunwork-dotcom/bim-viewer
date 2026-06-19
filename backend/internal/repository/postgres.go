@@ -130,14 +130,6 @@ func (r *PostgresRepo) Migrate() error {
 			operator VARCHAR(128) DEFAULT 'system',
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_elements_model_id ON elements(model_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_elements_category ON elements(category)`,
-		`CREATE INDEX IF NOT EXISTS idx_elements_geometry_hash ON elements(geometry_hash)`,
-		`CREATE INDEX IF NOT EXISTS idx_mesh_chunks_model_lod ON mesh_chunks(model_id, lod)`,
-		`CREATE INDEX IF NOT EXISTS idx_collision_results_task ON collision_results(task_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_collision_results_status ON collision_results(status)`,
-		`CREATE INDEX IF NOT EXISTS idx_collision_history_result ON collision_result_history(result_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_collision_history_task ON collision_result_history(task_id)`,
 		`DO $$
 		BEGIN
 			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='collision_results' AND column_name='status') THEN
@@ -157,6 +149,14 @@ func (r *PostgresRepo) Migrate() error {
 			END IF;
 		END $$`,
 		`UPDATE collision_results SET status = 'pending' WHERE status IS NULL OR status = ''`,
+		`CREATE INDEX IF NOT EXISTS idx_elements_model_id ON elements(model_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_elements_category ON elements(category)`,
+		`CREATE INDEX IF NOT EXISTS idx_elements_geometry_hash ON elements(geometry_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_mesh_chunks_model_lod ON mesh_chunks(model_id, lod)`,
+		`CREATE INDEX IF NOT EXISTS idx_collision_results_task ON collision_results(task_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_collision_results_status ON collision_results(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_collision_history_result ON collision_result_history(result_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_collision_history_task ON collision_result_history(task_id)`,
 	}
 	for _, m := range migrations {
 		if _, err := r.db.Exec(m); err != nil {

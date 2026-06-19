@@ -16,6 +16,7 @@ export const useCollisionStore = defineStore('collision', () => {
   const selectedIds = ref([])
   const historyMap = ref({})
   const historyLoading = ref(false)
+  const currentModelId = ref(null)
 
   const COLLISION_STATUS = {
     PENDING: 'pending',
@@ -54,6 +55,18 @@ export const useCollisionStore = defineStore('collision', () => {
   })
 
   const hasSelection = computed(() => selectedIds.value.length > 0)
+
+  function recalcStats() {
+    const s = { total: 0, pending: 0, confirmed: 0, false_positive: 0, resolved: 0 }
+    for (const r of results.value) {
+      s.total++
+      if (r.status === 'pending') s.pending++
+      else if (r.status === 'confirmed') s.confirmed++
+      else if (r.status === 'false_positive') s.false_positive++
+      else if (r.status === 'resolved') s.resolved++
+    }
+    stats.value = s
+  }
 
   function addToGroupA(elementId) {
     if (!groupA.value.includes(elementId)) {
@@ -109,9 +122,8 @@ export const useCollisionStore = defineStore('collision', () => {
   async function detectCollisions(modelId) {
     detecting.value = true
     results.value = []
-    stats.value = { total: 0, pending: 0, confirmed: 0, false_positive: 0, resolved: 0 }
     selectedIds.value = []
-    setCurrentModelId(modelId)
+    currentModelId.value = modelId
     try {
       const res = await api.post('/collision/detect', {
         modelId,
@@ -121,8 +133,7 @@ export const useCollisionStore = defineStore('collision', () => {
       })
       currentTaskId.value = res.data.taskId
       results.value = res.data.results || []
-      stats.value.total = results.value.length
-      stats.value.pending = results.value.length
+      recalcStats()
       return res.data
     } catch (err) {
       console.error('Collision detection failed:', err)
@@ -137,7 +148,7 @@ export const useCollisionStore = defineStore('collision', () => {
     try {
       const res = await api.get(`/collision/results/${taskId}`)
       results.value = res.data
-      await fetchStats(taskId)
+      recalcStats()
     } catch (err) {
       console.error('Failed to fetch results:', err)
     } finally {
@@ -147,14 +158,14 @@ export const useCollisionStore = defineStore('collision', () => {
 
   async function fetchResultsByModel(modelId) {
     loading.value = true
-    setCurrentModelId(modelId)
+    currentModelId.value = modelId
     try {
       const res = await api.get(`/collision/model/${modelId}/results`)
       results.value = res.data
       if (res.data.length > 0) {
         currentTaskId.value = res.data[0].taskId
       }
-      await fetchStatsByModel(modelId)
+      recalcStats()
     } catch (err) {
       console.error('Failed to fetch results by model:', err)
     } finally {
@@ -194,23 +205,23 @@ export const useCollisionStore = defineStore('collision', () => {
     }
   }
 
+  function applyStatusToResult(resultId, newStatus) {
+    const idx = results.value.findIndex(r => r.id === resultId)
+    if (idx > -1) {
+      const updated = { ...results.value[idx], status: newStatus, updatedAt: new Date().toISOString() }
+      results.value.splice(idx, 1, updated)
+    }
+  }
+
   async function updateStatus(resultId, newStatus, remark, operator = 'user') {
     try {
-      const res = await api.put(`/collision/results/${resultId}/status`, {
+      await api.put(`/collision/results/${resultId}/status`, {
         newStatus,
         remark,
         operator
       })
-      const idx = results.value.findIndex(r => r.id === resultId)
-      if (idx > -1) {
-        results.value[idx] = {
-          ...results.value[idx],
-          status: newStatus,
-          updatedAt: new Date().toISOString()
-        }
-      }
-      await refreshStats()
-      return res.data
+      applyStatusToResult(resultId, newStatus)
+      recalcStats()
     } catch (err) {
       console.error('Failed to update status:', err)
       throw err
@@ -220,52 +231,21 @@ export const useCollisionStore = defineStore('collision', () => {
   async function batchUpdateStatus(newStatus, remark, operator = 'user') {
     const targetIds = [...selectedIds.value]
     try {
-      const res = await api.put('/collision/results/batch/status', {
+      await api.put('/collision/results/batch/status', {
         resultIds: targetIds,
         newStatus,
         remark,
         operator
       })
       for (const id of targetIds) {
-        const idx = results.value.findIndex(r => r.id === id)
-        if (idx > -1) {
-          results.value[idx] = {
-            ...results.value[idx],
-            status: newStatus,
-            updatedAt: new Date().toISOString()
-          }
-        }
+        applyStatusToResult(id, newStatus)
       }
-      clearSelection()
-      await refreshStats()
-      return res.data
+      selectedIds.value = []
+      recalcStats()
     } catch (err) {
       console.error('Failed to batch update status:', err)
       throw err
     }
-  }
-
-  async function refreshStats() {
-    const modelId = getCurrentModelId()
-    if (modelId) {
-      try {
-        await fetchStatsByModel(modelId)
-      } catch (e) {
-        if (currentTaskId.value) {
-          await fetchStats(currentTaskId.value)
-        }
-      }
-    } else if (currentTaskId.value) {
-      await fetchStats(currentTaskId.value)
-    }
-  }
-
-  let _currentModelId = null
-  function setCurrentModelId(id) {
-    _currentModelId = id
-  }
-  function getCurrentModelId() {
-    return _currentModelId
   }
 
   async function exportCSV(taskId) {
@@ -296,6 +276,7 @@ export const useCollisionStore = defineStore('collision', () => {
   function clearResults() {
     results.value = []
     currentTaskId.value = null
+    currentModelId.value = null
     stats.value = { total: 0, pending: 0, confirmed: 0, false_positive: 0, resolved: 0 }
     selectedIds.value = []
     historyMap.value = {}
@@ -312,6 +293,7 @@ export const useCollisionStore = defineStore('collision', () => {
   return {
     groupA, groupB, threshold, results, currentTaskId, detecting, loading,
     stats, statusFilter, severityFilter, selectedIds, historyMap, historyLoading,
+    currentModelId,
     COLLISION_STATUS, STATUS_LABELS, STATUS_TYPES,
     filteredResults, allSelected, hasSelection,
     addToGroupA, removeFromGroupA, addToGroupB, removeFromGroupB,
