@@ -306,6 +306,19 @@ func (s *IFCParserService) extractElements(data []byte, modelID string, spatialT
 				floorName = loc.floorName
 			} else {
 				aabbMin, aabbMax = s.computeAABB(entity)
+				zCenter := (aabbMin[2] + aabbMax[2]) / 2
+				floorIdx := int(math.Floor(zCenter / floorHeight))
+				if floorIdx < 0 {
+					floorIdx = 0
+				}
+				if len(floors) > 0 {
+					if floorIdx >= len(floors) {
+						floorIdx = len(floors) - 1
+					}
+					floorName = floors[floorIdx]
+				} else {
+					floorName = fmt.Sprintf("Floor %d", floorIdx+1)
+				}
 			}
 
 			props := make(map[string]interface{})

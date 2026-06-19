@@ -529,12 +529,12 @@ export class BIMRenderer {
   }
 
   _createLODGeometry(baseGeometry, lod) {
-    if (lod === 0) return baseGeometry
-
     const geo = baseGeometry
     if (geo instanceof THREE.CylinderGeometry) {
       const params = geo.parameters
-      const segments = lod === 1 ? 8 : 4
+      let segments = 16
+      if (lod === 1) segments = 8
+      else if (lod === 2) segments = 4
       return new THREE.CylinderGeometry(
         params.radiusTop, params.radiusBottom, params.height,
         segments, 1, params.openEnded
@@ -542,14 +542,29 @@ export class BIMRenderer {
     }
 
     if (geo instanceof THREE.BoxGeometry) {
-      if (lod === 1) {
-        const params = geo.parameters
-        return new THREE.BoxGeometry(params.width, params.height, params.depth, 1, 1, 1)
+      const params = geo.parameters
+      const width = params.width
+      const height = params.height
+      const depth = params.depth
+
+      if (lod === 0) {
+        const maxDim = Math.max(width, height, depth)
+        let sx = 1, sy = 1, sz = 1
+        if (maxDim > 0) {
+          sx = Math.max(1, Math.round(width / 1000))
+          sy = Math.max(1, Math.round(height / 1000))
+          sz = Math.max(1, Math.round(depth / 1000))
+        }
+        sx = Math.min(sx, 8)
+        sy = Math.min(sy, 8)
+        sz = Math.min(sz, 8)
+        return new THREE.BoxGeometry(width, height, depth, sx, sy, sz)
+      } else if (lod === 1) {
+        return new THREE.BoxGeometry(width, height, depth, 1, 1, 1)
       } else {
-        const params = geo.parameters
-        const w = params.width * 0.98
-        const h = params.height * 0.98
-        const d = params.depth * 0.98
+        const w = width * 0.98
+        const h = height * 0.98
+        const d = depth * 0.98
         const simple = new THREE.BufferGeometry()
         const hw = w / 2, hh = h / 2, hd = d / 2
         const positions = new Float32Array([
@@ -571,7 +586,7 @@ export class BIMRenderer {
       }
     }
 
-    return baseGeometry.clone()
+    return lod === 0 ? baseGeometry : baseGeometry.clone()
   }
 
   highlightElement(elementId, color = 0x00aaff) {

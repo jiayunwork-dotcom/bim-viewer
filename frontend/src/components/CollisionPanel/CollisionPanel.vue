@@ -127,23 +127,25 @@
         style="width: 100%"
         :row-class-name="getRowClassName"
       >
-        <el-table-column prop="elementAName" label="构件A" width="100" />
-        <el-table-column prop="elementAType" label="类型" width="80" />
-        <el-table-column prop="elementBName" label="构件B" width="100" />
-        <el-table-column prop="elementBType" label="类型" width="80" />
-        <el-table-column prop="collisionType" label="类型" width="60">
+        <el-table-column prop="elementAName" label="构件A" width="90" />
+        <el-table-column prop="elementAType" label="类型" width="60" />
+        <el-table-column prop="elementAFloor" label="A楼层" width="70" />
+        <el-table-column prop="elementBName" label="构件B" width="90" />
+        <el-table-column prop="elementBType" label="类型" width="60" />
+        <el-table-column prop="elementBFloor" label="B楼层" width="70" />
+        <el-table-column prop="collisionType" label="碰撞" width="50">
           <template #default="{ row }">
             <el-tag :type="row.collisionType === 'hard' ? 'danger' : 'warning'" size="small">
               {{ row.collisionType === 'hard' ? '硬' : '软' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="penetration" label="深度/距离" width="80">
+        <el-table-column prop="penetration" label="深度/距离" width="70">
           <template #default="{ row }">
             {{ row.penetration.toFixed(1) }}mm
           </template>
         </el-table-column>
-        <el-table-column prop="severity" label="严重度" width="60">
+        <el-table-column prop="severity" label="严重度" width="50">
           <template #default="{ row }">
             <el-tag
               :type="row.severity === 'high' ? 'danger' : row.severity === 'medium' ? 'warning' : 'success'"
