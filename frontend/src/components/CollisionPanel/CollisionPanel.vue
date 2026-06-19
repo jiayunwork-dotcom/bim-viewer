@@ -217,10 +217,14 @@ function getRowClassName({ row }) {
   return `severity-${row.severity}`
 }
 
-function exportReport() {
+async function exportReport() {
   if (collisionStore.currentTaskId) {
-    collisionStore.exportCSV(collisionStore.currentTaskId)
-    ElMessage.success('碰撞报告已导出')
+    try {
+      await collisionStore.exportCSV(collisionStore.currentTaskId)
+      ElMessage.success('碰撞报告已导出')
+    } catch (err) {
+      ElMessage.error('导出失败: ' + err.message)
+    }
   }
 }
 </script>

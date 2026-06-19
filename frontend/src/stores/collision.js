@@ -74,12 +74,24 @@ export const useCollisionStore = defineStore('collision', () => {
     }
   }
 
-  function exportCSV(taskId) {
-    const url = `/api/v1/collision/export/${taskId}`
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `collision_report_${taskId}.csv`
-    link.click()
+  async function exportCSV(taskId) {
+    try {
+      const res = await api.get(`/collision/export/${taskId}`, {
+        responseType: 'blob'
+      })
+      const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `collision_report_${taskId}.csv`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Failed to export CSV:', err)
+      throw err
+    }
   }
 
   function clearGroups() {

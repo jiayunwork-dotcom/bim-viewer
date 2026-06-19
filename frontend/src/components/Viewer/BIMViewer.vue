@@ -150,9 +150,9 @@
         <span>{{ plane.preset }}: {{ plane.position.toFixed(0) }}</span>
         <el-slider
           v-model="plane.position"
-          :min="-100"
-          :max="100"
-          :step="0.5"
+          :min="-50000"
+          :max="50000"
+          :step="100"
           size="small"
           style="flex: 1; margin: 0 8px"
           @input="updateClipPlane(plane)"
@@ -183,13 +183,14 @@ import { useModelStore } from '../../stores/model'
 import { useViewerStore } from '../../stores/viewer'
 import { useClipStore } from '../../stores/clip'
 import { useMeasureStore } from '../../stores/measure'
+import { useCollisionStore } from '../../stores/collision'
 import { BIMRenderer } from '../../utils/BIMRenderer'
-import { LODManager } from '../../utils/LODManager'
 import TreePanel from '../TreePanel/TreePanel.vue'
 import PropertyPanel from '../PropertyPanel/PropertyPanel.vue'
 import CollisionPanel from '../CollisionPanel/CollisionPanel.vue'
 import ContextMenu from '../ContextMenu/ContextMenu.vue'
 import * as THREE from 'three'
+import { ElMessage } from 'element-plus'
 
 const route = useRoute()
 const modelStore = useModelStore()
@@ -237,9 +238,9 @@ onMounted(async () => {
 
   if (canvasContainer.value) {
     renderer.value = new BIMRenderer(canvasContainer.value)
-    renderer.value.lodManager = new LODManager(renderer.value)
     renderer.value.onElementClick = handleElementClick
     renderer.value.onBoxSelect = handleBoxSelect
+    renderer.value.onMeasureClick = handleMeasurePoint
 
     await loadModelMeshes()
 
@@ -259,6 +260,33 @@ onMounted(async () => {
     }
   })
 })
+
+watch(() => measureStore.activeTool, (tool) => {
+  if (renderer.value) {
+    renderer.value.setMeasureMode(!!tool)
+  }
+})
+
+function handleMeasurePoint(point) {
+  const p = { x: point.x, y: point.y, z: point.z }
+  measureStore.addPoint(p)
+
+  if (measureStore.currentPoints.length === 0) {
+    const latest = measureStore.measurements[measureStore.measurements.length - 1]
+    if (latest) {
+      renderer.value.addMeasurementLine(latest.points)
+      const midIdx = Math.floor(latest.points.length / 2)
+      const midPt = latest.points[midIdx]
+      renderer.value.addMeasurementLabel(latest.result.label, midPt)
+      ElMessage.success(`测量完成: ${latest.result.label}`)
+    }
+  } else {
+    const tempPoints = [...measureStore.currentPoints]
+    if (tempPoints.length >= 2) {
+      renderer.value.addMeasurementLine(tempPoints, 0x00ff00)
+    }
+  }
+}
 
 async function loadModelMeshes() {
   if (!renderer.value || !modelStore.currentModel) return

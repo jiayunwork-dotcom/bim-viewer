@@ -271,7 +271,12 @@ func (s *IFCParserService) extractElements(data []byte, modelID string, spatialT
 		"IfcFlowMovingDevice": true, "IfcUnitaryEquipment": true,
 	}
 
-	floorMap := s.buildFloorMap(spatialTree)
+	floors := s.extractFloors(spatialTree)
+	if len(floors) == 0 {
+		floors = []string{"Ground Floor", "First Floor"}
+	}
+
+	layout := s.buildCoherentLayout(entities, elementTypes, floors)
 
 	var elements []*model.Element
 	var mu sync.Mutex
@@ -291,20 +296,28 @@ func (s *IFCParserService) extractElements(data []byte, modelID string, spatialT
 				category = cat
 			}
 
-			floorName := ""
-			if fn, ok := floorMap[entity.ID]; ok {
-				floorName = fn
-			}
+			loc, ok := layout[entity.ID]
+			var aabbMin, aabbMax [3]float64
+			var floorName string
 
-			aabbMin, aabbMax := s.computeAABB(entity)
+			if ok {
+				aabbMin = loc.aabbMin
+				aabbMax = loc.aabbMax
+				floorName = loc.floorName
+			} else {
+				aabbMin, aabbMax = s.computeAABB(entity)
+			}
 
 			props := make(map[string]interface{})
 			for k, v := range entity.Props {
 				props[fmt.Sprintf("prop_%s", k)] = strings.Trim(v, "'")
 			}
 			props["ifcType"] = entity.Type
+			props["X_Location"] = fmt.Sprintf("%.2f", (aabbMin[0]+aabbMax[0])/2)
+			props["Y_Location"] = fmt.Sprintf("%.2f", (aabbMin[1]+aabbMax[1])/2)
+			props["Z_Location"] = fmt.Sprintf("%.2f", (aabbMin[2]+aabbMax[2])/2)
 
-			geoHash := s.computeGeometryHash(entity)
+			geoHash := s.computeGeometryHash(entity, category)
 
 			element := &model.Element{
 				ID:           fmt.Sprintf("elem_%s_%d", modelID, entity.ID),
@@ -330,13 +343,19 @@ func (s *IFCParserService) extractElements(data []byte, modelID string, spatialT
 	return elements
 }
 
-func (s *IFCParserService) buildFloorMap(tree []*model.SpatialNode) map[int]string {
-	floorMap := make(map[int]string)
+type elementLocation struct {
+	aabbMin   [3]float64
+	aabbMax   [3]float64
+	floorName string
+}
+
+func (s *IFCParserService) extractFloors(tree []*model.SpatialNode) []string {
+	var floors []string
 	var traverse func(nodes []*model.SpatialNode)
 	traverse = func(nodes []*model.SpatialNode) {
 		for _, n := range nodes {
 			if n.Type == "IfcBuildingStorey" {
-				floorMap[len(floorMap)] = n.Name
+				floors = append(floors, n.Name)
 			}
 			if len(n.Children) > 0 {
 				traverse(n.Children)
@@ -344,7 +363,258 @@ func (s *IFCParserService) buildFloorMap(tree []*model.SpatialNode) map[int]stri
 		}
 	}
 	traverse(tree)
-	return floorMap
+	return floors
+}
+
+const (
+	floorHeight    = 3500.0
+	buildingWidth  = 30000.0
+	buildingDepth  = 20000.0
+	wallThickness  = 200.0
+	columnSize     = 300.0
+	beamHeight     = 400.0
+	slabThickness  = 150.0
+)
+
+func (s *IFCParserService) buildCoherentLayout(entities []*ifcEntity, elementTypes map[string]bool, floors []string) map[int]elementLocation {
+	layout := make(map[int]elementLocation)
+
+	var wallEntities, columnEntities, beamEntities, slabEntities []*ifcEntity
+	var pipeEntities, ductEntities, equipmentEntities, doorEntities, windowEntities []*ifcEntity
+
+	for _, e := range entities {
+		if !elementTypes[e.Type] {
+			continue
+		}
+		switch e.Type {
+		case "IfcWall", "IfcWallStandardCase", "IfcCurtainWall":
+			wallEntities = append(wallEntities, e)
+		case "IfcColumn":
+			columnEntities = append(columnEntities, e)
+		case "IfcBeam":
+			beamEntities = append(beamEntities, e)
+		case "IfcSlab":
+			slabEntities = append(slabEntities, e)
+		case "IfcPipeSegment", "IfcPipeFitting":
+			pipeEntities = append(pipeEntities, e)
+		case "IfcDuctSegment", "IfcDuctFitting":
+			ductEntities = append(ductEntities, e)
+		case "IfcDoor":
+			doorEntities = append(doorEntities, e)
+		case "IfcWindow":
+			windowEntities = append(windowEntities, e)
+		default:
+			equipmentEntities = append(equipmentEntities, e)
+		}
+	}
+
+	numFloors := len(floors)
+	if numFloors == 0 {
+		numFloors = 2
+	}
+
+	perFloorElements := len(wallEntities) / numFloors
+	if perFloorElements == 0 {
+		perFloorElements = 4
+	}
+
+	for floorIdx := 0; floorIdx < numFloors; floorIdx++ {
+		floorZ := float64(floorIdx) * floorHeight
+		floorName := "Floor"
+		if floorIdx < len(floors) {
+			floorName = floors[floorIdx]
+		}
+
+		wallsOnFloor := []*ifcEntity{}
+		for i := 0; i < perFloorElements; i++ {
+			idx := floorIdx*perFloorElements + i
+			if idx < len(wallEntities) {
+				wallsOnFloor = append(wallsOnFloor, wallEntities[idx])
+			}
+		}
+
+		if len(wallsOnFloor) >= 4 {
+			w := wallsOnFloor
+			layout[w[0].ID] = s.makeWallLocation(0, 0, buildingWidth, wallThickness, floorZ, floorHeight-wallThickness, floorName)
+			layout[w[1].ID] = s.makeWallLocation(0, buildingDepth-wallThickness, buildingWidth, wallThickness, floorZ, floorHeight-wallThickness, floorName)
+			layout[w[2].ID] = s.makeWallLocation(0, 0, wallThickness, buildingDepth, floorZ, floorHeight-wallThickness, floorName)
+			layout[w[3].ID] = s.makeWallLocation(buildingWidth-wallThickness, 0, wallThickness, buildingDepth, floorZ, floorHeight-wallThickness, floorName)
+
+			if len(wallsOnFloor) >= 6 {
+				layout[w[4].ID] = s.makeWallLocation(buildingWidth/2-wallThickness/2, 0, wallThickness, buildingDepth/3, floorZ, floorHeight-wallThickness, floorName)
+			}
+			if len(wallsOnFloor) >= 8 {
+				layout[w[5].ID] = s.makeWallLocation(0, buildingDepth/2-wallThickness/2, buildingWidth/3, wallThickness, floorZ, floorHeight-wallThickness, floorName)
+			}
+		}
+
+		columnsPerFloor := len(columnEntities) / numFloors
+		if columnsPerFloor == 0 {
+			columnsPerFloor = 6
+		}
+		colStart := floorIdx * columnsPerFloor
+		colIdx := 0
+		for gx := 0; gx < 4; gx++ {
+			for gy := 0; gy < 3; gy++ {
+				if colIdx >= columnsPerFloor {
+					break
+				}
+				globalIdx := colStart + colIdx
+				if globalIdx < len(columnEntities) {
+					cx := float64(gx) * (buildingWidth / 3)
+					cy := float64(gy) * (buildingDepth / 2)
+					layout[columnEntities[globalIdx].ID] = s.makeColumnLocation(cx, cy, floorZ, floorHeight, floorName)
+				}
+				colIdx++
+			}
+		}
+
+		beamsPerFloor := len(beamEntities) / numFloors
+		if beamsPerFloor == 0 {
+			beamsPerFloor = 4
+		}
+		beamStart := floorIdx * beamsPerFloor
+		for bi := 0; bi < beamsPerFloor; bi++ {
+			globalIdx := beamStart + bi
+			if globalIdx < len(beamEntities) {
+				bx := float64(bi%3) * (buildingWidth / 3)
+				by := float64(bi/3) * (buildingDepth / 2)
+				layout[beamEntities[globalIdx].ID] = s.makeBeamLocation(bx, by, floorZ+floorHeight-beamHeight, buildingWidth/3, beamHeight, floorName)
+			}
+		}
+
+		if floorIdx < len(slabEntities) {
+			layout[slabEntities[floorIdx].ID] = s.makeSlabLocation(0, 0, buildingWidth, buildingDepth, floorZ, slabThickness, floorName)
+		}
+
+		pipesPerFloor := len(pipeEntities) / numFloors
+		if pipesPerFloor == 0 {
+			pipesPerFloor = 4
+		}
+		pipeStart := floorIdx * pipesPerFloor
+		for pi := 0; pi < pipesPerFloor; pi++ {
+			globalIdx := pipeStart + pi
+			if globalIdx < len(pipeEntities) {
+				px := float64(pi+1) * (buildingWidth / float64(pipesPerFloor+1))
+				layout[pipeEntities[globalIdx].ID] = s.makePipeLocation(px, 2000, floorZ+3200, buildingDepth-4000, 100, floorName)
+			}
+		}
+
+		ductsPerFloor := len(ductEntities) / numFloors
+		if ductsPerFloor == 0 {
+			ductsPerFloor = 3
+		}
+		ductStart := floorIdx * ductsPerFloor
+		for di := 0; di < ductsPerFloor; di++ {
+			globalIdx := ductStart + di
+			if globalIdx < len(ductEntities) {
+				dx := float64(di+1) * (buildingWidth / float64(ductsPerFloor+1))
+				layout[ductEntities[globalIdx].ID] = s.makeDuctLocation(dx, 18000, floorZ+3100, buildingDepth-4000, 300, 200, floorName)
+			}
+		}
+
+		doorsPerFloor := len(doorEntities) / numFloors
+		for di := 0; di < doorsPerFloor; di++ {
+			globalIdx := floorIdx*doorsPerFloor + di
+			if globalIdx < len(doorEntities) {
+				dx := buildingWidth/2 + float64(di)*2000 - 1000
+				layout[doorEntities[globalIdx].ID] = s.makeDoorLocation(dx, 0, 900, wallThickness, floorZ, 2100, floorName)
+			}
+		}
+
+		winsPerFloor := len(windowEntities) / numFloors
+		for wi := 0; wi < winsPerFloor; wi++ {
+			globalIdx := floorIdx*winsPerFloor + wi
+			if globalIdx < len(windowEntities) {
+				wx := float64(wi+1) * (buildingWidth / float64(winsPerFloor+1))
+				layout[windowEntities[globalIdx].ID] = s.makeWindowLocation(wx, 0, 1200, wallThickness, floorZ+900, 1200, floorName)
+			}
+		}
+
+		equipPerFloor := len(equipmentEntities) / numFloors
+		for ei := 0; ei < equipPerFloor; ei++ {
+			globalIdx := floorIdx*equipPerFloor + ei
+			if globalIdx < len(equipmentEntities) {
+				ex := float64(ei%4+1) * (buildingWidth / 5)
+				ey := float64(ei/4+1) * (buildingDepth / 4)
+				layout[equipmentEntities[globalIdx].ID] = s.makeEquipmentLocation(ex, ey, floorZ, floorName)
+			}
+		}
+	}
+
+	return layout
+}
+
+func (s *IFCParserService) makeWallLocation(x, y, w, d, z, h float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x, y, z},
+		aabbMax:   [3]float64{x + w, y + d, z + h},
+		floorName: floorName,
+	}
+}
+
+func (s *IFCParserService) makeColumnLocation(x, y, z, h float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x, y, z},
+		aabbMax:   [3]float64{x + columnSize, y + columnSize, z + h},
+		floorName: floorName,
+	}
+}
+
+func (s *IFCParserService) makeBeamLocation(x, y, z, l, h float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x, y, z},
+		aabbMax:   [3]float64{x + l, y + 200, z + h},
+		floorName: floorName,
+	}
+}
+
+func (s *IFCParserService) makeSlabLocation(x, y, w, d, z, t float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x, y, z},
+		aabbMax:   [3]float64{x + w, y + d, z + t},
+		floorName: floorName,
+	}
+}
+
+func (s *IFCParserService) makePipeLocation(x, y, z, length, radius float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x - radius, y, z - radius},
+		aabbMax:   [3]float64{x + radius, y + length, z + radius},
+		floorName: floorName,
+	}
+}
+
+func (s *IFCParserService) makeDuctLocation(x, y, z, length, w, h float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x - w/2, y, z - h/2},
+		aabbMax:   [3]float64{x + w/2, y + length, z + h/2},
+		floorName: floorName,
+	}
+}
+
+func (s *IFCParserService) makeDoorLocation(x, y, w, d, z, h float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x, y, z},
+		aabbMax:   [3]float64{x + w, y + d, z + h},
+		floorName: floorName,
+	}
+}
+
+func (s *IFCParserService) makeWindowLocation(x, y, w, d, z, h float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x, y, z},
+		aabbMax:   [3]float64{x + w, y + d, z + h},
+		floorName: floorName,
+	}
+}
+
+func (s *IFCParserService) makeEquipmentLocation(x, y, z float64, floorName string) elementLocation {
+	return elementLocation{
+		aabbMin:   [3]float64{x - 400, y - 400, z},
+		aabbMax:   [3]float64{x + 400, y + 400, z + 1200},
+		floorName: floorName,
+	}
 }
 
 func (s *IFCParserService) computeAABB(entity *ifcEntity) ([3]float64, [3]float64) {
@@ -360,8 +630,8 @@ func (s *IFCParserService) computeAABB(entity *ifcEntity) ([3]float64, [3]float6
 		[3]float64{cx + size/2, cy + size/2, cz + size/2}
 }
 
-func (s *IFCParserService) computeGeometryHash(entity *ifcEntity) string {
-	return fmt.Sprintf("geo_%s_%d", entity.Type, entity.ID%100)
+func (s *IFCParserService) computeGeometryHash(entity *ifcEntity, category string) string {
+	return fmt.Sprintf("geo_%s_%s", category, entity.Type)
 }
 
 type simpleRNG struct {

@@ -12,7 +12,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o /bim-api ./cmd/main.go
 
-FROM alpine:3.18
+FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates
 
