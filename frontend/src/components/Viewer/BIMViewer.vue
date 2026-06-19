@@ -89,7 +89,7 @@
     </div>
 
     <div class="bottom-panel" v-show="viewerStore.activePanel === 'collision'">
-      <CollisionPanel :renderer="renderer" />
+      <CollisionPanel :renderer="renderer" :model-id="modelStore.currentModel?.id" />
     </div>
 
     <div class="side-buttons">

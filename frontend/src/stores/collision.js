@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import api from '../utils/api'
 
 export const useCollisionStore = defineStore('collision', () => {
@@ -10,6 +10,50 @@ export const useCollisionStore = defineStore('collision', () => {
   const currentTaskId = ref(null)
   const detecting = ref(false)
   const loading = ref(false)
+  const stats = ref({ total: 0, pending: 0, confirmed: 0, false_positive: 0, resolved: 0 })
+  const statusFilter = ref('all')
+  const severityFilter = ref('all')
+  const selectedIds = ref([])
+  const historyMap = ref({})
+  const historyLoading = ref(false)
+
+  const COLLISION_STATUS = {
+    PENDING: 'pending',
+    CONFIRMED: 'confirmed',
+    FALSE_POSITIVE: 'false_positive',
+    RESOLVED: 'resolved'
+  }
+
+  const STATUS_LABELS = {
+    [COLLISION_STATUS.PENDING]: '待处理',
+    [COLLISION_STATUS.CONFIRMED]: '已确认',
+    [COLLISION_STATUS.FALSE_POSITIVE]: '误报',
+    [COLLISION_STATUS.RESOLVED]: '已解决'
+  }
+
+  const STATUS_TYPES = {
+    [COLLISION_STATUS.PENDING]: 'info',
+    [COLLISION_STATUS.CONFIRMED]: 'danger',
+    [COLLISION_STATUS.FALSE_POSITIVE]: 'success',
+    [COLLISION_STATUS.RESOLVED]: 'primary'
+  }
+
+  const filteredResults = computed(() => {
+    let filtered = results.value
+    if (statusFilter.value !== 'all') {
+      filtered = filtered.filter(r => r.status === statusFilter.value)
+    }
+    if (severityFilter.value !== 'all') {
+      filtered = filtered.filter(r => r.collisionType === severityFilter.value)
+    }
+    return filtered
+  })
+
+  const allSelected = computed(() => {
+    return filteredResults.value.length > 0 && filteredResults.value.every(r => selectedIds.value.includes(r.id))
+  })
+
+  const hasSelection = computed(() => selectedIds.value.length > 0)
 
   function addToGroupA(elementId) {
     if (!groupA.value.includes(elementId)) {
@@ -41,9 +85,32 @@ export const useCollisionStore = defineStore('collision', () => {
     }
   }
 
+  function toggleSelection(id) {
+    const index = selectedIds.value.indexOf(id)
+    if (index > -1) {
+      selectedIds.value.splice(index, 1)
+    } else {
+      selectedIds.value.push(id)
+    }
+  }
+
+  function toggleAllSelection() {
+    if (allSelected.value) {
+      selectedIds.value = []
+    } else {
+      selectedIds.value = filteredResults.value.map(r => r.id)
+    }
+  }
+
+  function clearSelection() {
+    selectedIds.value = []
+  }
+
   async function detectCollisions(modelId) {
     detecting.value = true
     results.value = []
+    stats.value = { total: 0, pending: 0, confirmed: 0, false_positive: 0, resolved: 0 }
+    selectedIds.value = []
     try {
       const res = await api.post('/collision/detect', {
         modelId,
@@ -53,6 +120,8 @@ export const useCollisionStore = defineStore('collision', () => {
       })
       currentTaskId.value = res.data.taskId
       results.value = res.data.results || []
+      stats.value.total = results.value.length
+      stats.value.pending = results.value.length
       return res.data
     } catch (err) {
       console.error('Collision detection failed:', err)
@@ -67,10 +136,107 @@ export const useCollisionStore = defineStore('collision', () => {
     try {
       const res = await api.get(`/collision/results/${taskId}`)
       results.value = res.data
+      await fetchStats(taskId)
     } catch (err) {
       console.error('Failed to fetch results:', err)
     } finally {
       loading.value = false
+    }
+  }
+
+  async function fetchResultsByModel(modelId) {
+    loading.value = true
+    try {
+      const res = await api.get(`/collision/model/${modelId}/results`)
+      results.value = res.data
+      if (res.data.length > 0) {
+        currentTaskId.value = res.data[0].taskId
+      }
+      await fetchStatsByModel(modelId)
+    } catch (err) {
+      console.error('Failed to fetch results by model:', err)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function fetchStats(taskId) {
+    try {
+      const res = await api.get(`/collision/stats/${taskId}`)
+      stats.value = res.data
+    } catch (err) {
+      console.error('Failed to fetch stats:', err)
+    }
+  }
+
+  async function fetchStatsByModel(modelId) {
+    try {
+      const res = await api.get(`/collision/model/${modelId}/stats`)
+      stats.value = res.data
+    } catch (err) {
+      console.error('Failed to fetch stats by model:', err)
+    }
+  }
+
+  async function fetchHistory(resultId) {
+    historyLoading.value = true
+    try {
+      const res = await api.get(`/collision/history/${resultId}`)
+      historyMap.value[resultId] = res.data
+      return res.data
+    } catch (err) {
+      console.error('Failed to fetch history:', err)
+      throw err
+    } finally {
+      historyLoading.value = false
+    }
+  }
+
+  async function updateStatus(resultId, newStatus, remark, operator = 'user') {
+    try {
+      const res = await api.put(`/collision/results/${resultId}/status`, {
+        newStatus,
+        remark,
+        operator
+      })
+      const result = results.value.find(r => r.id === resultId)
+      if (result) {
+        result.status = newStatus
+        result.updatedAt = new Date().toISOString()
+      }
+      if (currentTaskId.value) {
+        await fetchStats(currentTaskId.value)
+      }
+      return res.data
+    } catch (err) {
+      console.error('Failed to update status:', err)
+      throw err
+    }
+  }
+
+  async function batchUpdateStatus(newStatus, remark, operator = 'user') {
+    try {
+      const res = await api.put('/collision/results/batch/status', {
+        resultIds: selectedIds.value,
+        newStatus,
+        remark,
+        operator
+      })
+      for (const id of selectedIds.value) {
+        const result = results.value.find(r => r.id === id)
+        if (result) {
+          result.status = newStatus
+          result.updatedAt = new Date().toISOString()
+        }
+      }
+      if (currentTaskId.value) {
+        await fetchStats(currentTaskId.value)
+      }
+      clearSelection()
+      return res.data
+    } catch (err) {
+      console.error('Failed to batch update status:', err)
+      throw err
     }
   }
 
@@ -102,12 +268,29 @@ export const useCollisionStore = defineStore('collision', () => {
   function clearResults() {
     results.value = []
     currentTaskId.value = null
+    stats.value = { total: 0, pending: 0, confirmed: 0, false_positive: 0, resolved: 0 }
+    selectedIds.value = []
+    historyMap.value = {}
+  }
+
+  function setStatusFilter(filter) {
+    statusFilter.value = filter
+  }
+
+  function setSeverityFilter(filter) {
+    severityFilter.value = filter
   }
 
   return {
     groupA, groupB, threshold, results, currentTaskId, detecting, loading,
+    stats, statusFilter, severityFilter, selectedIds, historyMap, historyLoading,
+    COLLISION_STATUS, STATUS_LABELS, STATUS_TYPES,
+    filteredResults, allSelected, hasSelection,
     addToGroupA, removeFromGroupA, addToGroupB, removeFromGroupB,
-    addCategoryToGroup, detectCollisions, fetchResults, exportCSV,
-    clearGroups, clearResults
+    addCategoryToGroup, toggleSelection, toggleAllSelection, clearSelection,
+    detectCollisions, fetchResults, fetchResultsByModel,
+    fetchStats, fetchStatsByModel, fetchHistory,
+    updateStatus, batchUpdateStatus, exportCSV,
+    clearGroups, clearResults, setStatusFilter, setSeverityFilter
   }
 })

@@ -1,7 +1,9 @@
 package service
 
 import (
+	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -176,10 +178,21 @@ func (ms *ModelService) ExportCollisionCSV(taskID string, writer io.Writer) erro
 		"ID", "Element A Name", "Element A Type", "Element A Floor",
 		"Element B Name", "Element B Type", "Element B Floor",
 		"Collision Type", "Collision Point X", "Collision Point Y", "Collision Point Z",
-		"Penetration/Distance (mm)", "Severity",
+		"Penetration/Distance (mm)", "Severity", "Status",
 	})
 
+	statusMap := map[model.CollisionStatus]string{
+		model.CollisionStatusPending:   "待处理",
+		model.CollisionStatusConfirmed: "已确认",
+		model.CollisionStatusFalse:     "误报",
+		model.CollisionStatusResolved:  "已解决",
+	}
+
 	for _, r := range results {
+		status := statusMap[r.Status]
+		if status == "" {
+			status = string(r.Status)
+		}
 		w.Write([]string{
 			r.ID,
 			r.ElementAName, r.ElementAType, r.ElementAFloor,
@@ -190,10 +203,94 @@ func (ms *ModelService) ExportCollisionCSV(taskID string, writer io.Writer) erro
 			fmt.Sprintf("%.2f", r.CollisionPoint[2]),
 			fmt.Sprintf("%.2f", r.Penetration),
 			r.Severity,
+			status,
 		})
 	}
 
 	return nil
+}
+
+func (ms *ModelService) GetCollisionStats(taskID string) (*model.CollisionStats, error) {
+	return ms.repo.GetCollisionStats(taskID)
+}
+
+func (ms *ModelService) GetCollisionStatsByModel(modelID string) (*model.CollisionStats, error) {
+	return ms.repo.GetCollisionStatsByModel(modelID)
+}
+
+func (ms *ModelService) GetCollisionResultsByModel(modelID string) ([]*model.CollisionResult, error) {
+	return ms.repo.GetCollisionResultsByModel(modelID)
+}
+
+func (ms *ModelService) GetCollisionHistory(resultID string) ([]*model.CollisionResultHistory, error) {
+	return ms.repo.GetCollisionHistory(resultID)
+}
+
+func (ms *ModelService) UpdateCollisionResultStatus(resultID string, newStatus model.CollisionStatus, remark string, operator string) error {
+	if remark == "" {
+		return fmt.Errorf("remark is required")
+	}
+	validStatuses := map[model.CollisionStatus]bool{
+		model.CollisionStatusPending:   true,
+		model.CollisionStatusConfirmed: true,
+		model.CollisionStatusFalse:     true,
+		model.CollisionStatusResolved:  true,
+	}
+	if !validStatuses[newStatus] {
+		return fmt.Errorf("invalid status: %s", newStatus)
+	}
+	if operator == "" {
+		operator = "system"
+	}
+	return ms.repo.UpdateCollisionResultStatus(resultID, newStatus, remark, operator)
+}
+
+func (ms *ModelService) BatchUpdateCollisionStatus(resultIDs []string, newStatus model.CollisionStatus, remark string, operator string) (int, error) {
+	if remark == "" {
+		return 0, fmt.Errorf("remark is required")
+	}
+	validStatuses := map[model.CollisionStatus]bool{
+		model.CollisionStatusPending:   true,
+		model.CollisionStatusConfirmed: true,
+		model.CollisionStatusFalse:     true,
+		model.CollisionStatusResolved:  true,
+	}
+	if !validStatuses[newStatus] {
+		return 0, fmt.Errorf("invalid status: %s", newStatus)
+	}
+	if operator == "" {
+		operator = "system"
+	}
+	return ms.repo.BatchUpdateCollisionStatus(resultIDs, newStatus, remark, operator)
+}
+
+func (ms *ModelService) GetCollisionTasksByModel(modelID string) ([]*model.CollisionTask, error) {
+	rows, err := ms.repo.GetDB().Query(
+		`SELECT id, model_id, group_a, group_b, threshold, status, created_at, completed_at 
+		 FROM collision_tasks WHERE model_id = $1 ORDER BY created_at DESC`,
+		modelID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tasks []*model.CollisionTask
+	for rows.Next() {
+		t := &model.CollisionTask{}
+		var groupA, groupB string
+		var completedAt sql.NullTime
+		err := rows.Scan(&t.ID, &t.ModelID, &groupA, &groupB, &t.Threshold, &t.Status, &t.CreatedAt, &completedAt)
+		if err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(groupA), &t.GroupA)
+		json.Unmarshal([]byte(groupB), &t.GroupB)
+		if completedAt.Valid {
+			t.CompletedAt = &completedAt.Time
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
 }
 
 func flattenSpatialTree(nodes []*model.SpatialNode) []*model.SpatialNode {

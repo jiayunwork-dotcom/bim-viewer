@@ -51,6 +51,13 @@ func main() {
 	api.HandleFunc("/collision/detect", collisionHandler.DetectCollisions).Methods("POST", "OPTIONS")
 	api.HandleFunc("/collision/results/{taskId}", collisionHandler.GetCollisionResults).Methods("GET", "OPTIONS")
 	api.HandleFunc("/collision/export/{taskId}", collisionHandler.ExportCSV).Methods("GET", "OPTIONS")
+	api.HandleFunc("/collision/stats/{taskId}", collisionHandler.GetCollisionStats).Methods("GET", "OPTIONS")
+	api.HandleFunc("/collision/model/{modelId}/stats", collisionHandler.GetCollisionStatsByModel).Methods("GET", "OPTIONS")
+	api.HandleFunc("/collision/model/{modelId}/results", collisionHandler.GetCollisionResultsByModel).Methods("GET", "OPTIONS")
+	api.HandleFunc("/collision/model/{modelId}/tasks", collisionHandler.GetCollisionTasksByModel).Methods("GET", "OPTIONS")
+	api.HandleFunc("/collision/history/{resultId}", collisionHandler.GetCollisionHistory).Methods("GET", "OPTIONS")
+	api.HandleFunc("/collision/results/{resultId}/status", collisionHandler.UpdateCollisionStatus).Methods("PUT", "OPTIONS")
+	api.HandleFunc("/collision/results/batch/status", collisionHandler.BatchUpdateCollisionStatus).Methods("PUT", "OPTIONS")
 
 	port := os.Getenv("PORT")
 	if port == "" {

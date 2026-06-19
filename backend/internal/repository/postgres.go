@@ -1,9 +1,12 @@
 package repository
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 	"bim-viewer/internal/model"
 
 	_ "github.com/lib/pq"
@@ -26,6 +29,10 @@ func NewPostgresRepo(dbURL string) (*PostgresRepo, error) {
 
 func (r *PostgresRepo) Close() {
 	r.db.Close()
+}
+
+func (r *PostgresRepo) GetDB() *sql.DB {
+	return r.db
 }
 
 func (r *PostgresRepo) Migrate() error {
@@ -108,13 +115,29 @@ func (r *PostgresRepo) Migrate() error {
 			collision_type VARCHAR(32),
 			collision_point DOUBLE PRECISION[3],
 			penetration DOUBLE PRECISION DEFAULT 0,
-			severity VARCHAR(16)
+			severity VARCHAR(16),
+			status VARCHAR(32) DEFAULT 'pending',
+			created_at TIMESTAMP DEFAULT NOW(),
+			updated_at TIMESTAMP DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS collision_result_history (
+			id VARCHAR(64) PRIMARY KEY,
+			result_id VARCHAR(64) REFERENCES collision_results(id) ON DELETE CASCADE,
+			task_id VARCHAR(64) REFERENCES collision_tasks(id) ON DELETE CASCADE,
+			old_status VARCHAR(32) DEFAULT 'pending',
+			new_status VARCHAR(32) NOT NULL,
+			remark TEXT NOT NULL,
+			operator VARCHAR(128) DEFAULT 'system',
+			created_at TIMESTAMP DEFAULT NOW()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_elements_model_id ON elements(model_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_elements_category ON elements(category)`,
 		`CREATE INDEX IF NOT EXISTS idx_elements_geometry_hash ON elements(geometry_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_mesh_chunks_model_lod ON mesh_chunks(model_id, lod)`,
 		`CREATE INDEX IF NOT EXISTS idx_collision_results_task ON collision_results(task_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_collision_results_status ON collision_results(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_collision_history_result ON collision_result_history(result_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_collision_history_task ON collision_result_history(task_id)`,
 	}
 	for _, m := range migrations {
 		if _, err := r.db.Exec(m); err != nil {
@@ -343,21 +366,24 @@ func (r *PostgresRepo) UpdateCollisionTaskStatus(id, status string) error {
 }
 
 func (r *PostgresRepo) CreateCollisionResult(cr *model.CollisionResult) error {
+	if cr.Status == "" {
+		cr.Status = model.CollisionStatusPending
+	}
 	_, err := r.db.Exec(
-		`INSERT INTO collision_results (id, task_id, element_a_id, element_a_name, element_a_type, element_a_floor, element_b_id, element_b_name, element_b_type, element_b_floor, collision_type, collision_point, penetration, severity)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		`INSERT INTO collision_results (id, task_id, element_a_id, element_a_name, element_a_type, element_a_floor, element_b_id, element_b_name, element_b_type, element_b_floor, collision_type, collision_point, penetration, severity, status, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), NOW())`,
 		cr.ID, cr.TaskID, cr.ElementAID, cr.ElementAName, cr.ElementAType, cr.ElementAFloor,
 		cr.ElementBID, cr.ElementBName, cr.ElementBType, cr.ElementBFloor,
 		cr.CollisionType,
 		fmt.Sprintf(`[%f,%f,%f]`, cr.CollisionPoint[0], cr.CollisionPoint[1], cr.CollisionPoint[2]),
-		cr.Penetration, cr.Severity,
+		cr.Penetration, cr.Severity, cr.Status,
 	)
 	return err
 }
 
 func (r *PostgresRepo) GetCollisionResults(taskID string) ([]*model.CollisionResult, error) {
 	rows, err := r.db.Query(
-		`SELECT id, task_id, element_a_id, element_a_name, element_a_type, element_a_floor, element_b_id, element_b_name, element_b_type, element_b_floor, collision_type, collision_point, penetration, severity FROM collision_results WHERE task_id = $1 ORDER BY severity, penetration DESC`,
+		`SELECT id, task_id, element_a_id, element_a_name, element_a_type, element_a_floor, element_b_id, element_b_name, element_b_type, element_b_floor, collision_type, collision_point, penetration, severity, status, created_at, updated_at FROM collision_results WHERE task_id = $1 ORDER BY severity, penetration DESC`,
 		taskID,
 	)
 	if err != nil {
@@ -368,15 +394,264 @@ func (r *PostgresRepo) GetCollisionResults(taskID string) ([]*model.CollisionRes
 	for rows.Next() {
 		cr := &model.CollisionResult{}
 		var pointStr string
-		if err := rows.Scan(&cr.ID, &cr.TaskID, &cr.ElementAID, &cr.ElementAName, &cr.ElementAType, &cr.ElementAFloor, &cr.ElementBID, &cr.ElementBName, &cr.ElementBType, &cr.ElementBFloor, &cr.CollisionType, &pointStr, &cr.Penetration, &cr.Severity); err != nil {
+		var status string
+		if err := rows.Scan(&cr.ID, &cr.TaskID, &cr.ElementAID, &cr.ElementAName, &cr.ElementAType, &cr.ElementAFloor, &cr.ElementBID, &cr.ElementBName, &cr.ElementBType, &cr.ElementBFloor, &cr.CollisionType, &pointStr, &cr.Penetration, &cr.Severity, &status, &cr.CreatedAt, &cr.UpdatedAt); err != nil {
 			return nil, err
 		}
 		var pt [3]float64
 		json.Unmarshal([]byte(pointStr), &pt)
 		cr.CollisionPoint = pt
+		cr.Status = model.CollisionStatus(status)
+		if cr.Status == "" {
+			cr.Status = model.CollisionStatusPending
+		}
 		results = append(results, cr)
 	}
 	return results, nil
+}
+
+func (r *PostgresRepo) GetCollisionResultsByModel(modelID string) ([]*model.CollisionResult, error) {
+	rows, err := r.db.Query(
+		`SELECT cr.id, cr.task_id, cr.element_a_id, cr.element_a_name, cr.element_a_type, cr.element_a_floor, cr.element_b_id, cr.element_b_name, cr.element_b_type, cr.element_b_floor, cr.collision_type, cr.collision_point, cr.penetration, cr.severity, cr.status, cr.created_at, cr.updated_at 
+		 FROM collision_results cr 
+		 INNER JOIN collision_tasks ct ON cr.task_id = ct.id 
+		 WHERE ct.model_id = $1 
+		 ORDER BY cr.created_at DESC, cr.severity, cr.penetration DESC`,
+		modelID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var results []*model.CollisionResult
+	for rows.Next() {
+		cr := &model.CollisionResult{}
+		var pointStr string
+		var status string
+		if err := rows.Scan(&cr.ID, &cr.TaskID, &cr.ElementAID, &cr.ElementAName, &cr.ElementAType, &cr.ElementAFloor, &cr.ElementBID, &cr.ElementBName, &cr.ElementBType, &cr.ElementBFloor, &cr.CollisionType, &pointStr, &cr.Penetration, &cr.Severity, &status, &cr.CreatedAt, &cr.UpdatedAt); err != nil {
+			return nil, err
+		}
+		var pt [3]float64
+		json.Unmarshal([]byte(pointStr), &pt)
+		cr.CollisionPoint = pt
+		cr.Status = model.CollisionStatus(status)
+		if cr.Status == "" {
+			cr.Status = model.CollisionStatusPending
+		}
+		results = append(results, cr)
+	}
+	return results, nil
+}
+
+func (r *PostgresRepo) GetCollisionStats(taskID string) (*model.CollisionStats, error) {
+	row := r.db.QueryRow(
+		`SELECT 
+			COUNT(*) as total,
+			COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+			COUNT(CASE WHEN status = 'confirmed' THEN 1 END) as confirmed,
+			COUNT(CASE WHEN status = 'false_positive' THEN 1 END) as false_positive,
+			COUNT(CASE WHEN status = 'resolved' THEN 1 END) as resolved
+		 FROM collision_results WHERE task_id = $1`,
+		taskID,
+	)
+	stats := &model.CollisionStats{}
+	err := row.Scan(&stats.Total, &stats.Pending, &stats.Confirmed, &stats.False, &stats.Resolved)
+	if err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+func (r *PostgresRepo) GetCollisionStatsByModel(modelID string) (*model.CollisionStats, error) {
+	row := r.db.QueryRow(
+		`SELECT 
+			COUNT(*) as total,
+			COUNT(CASE WHEN cr.status = 'pending' THEN 1 END) as pending,
+			COUNT(CASE WHEN cr.status = 'confirmed' THEN 1 END) as confirmed,
+			COUNT(CASE WHEN cr.status = 'false_positive' THEN 1 END) as false_positive,
+			COUNT(CASE WHEN cr.status = 'resolved' THEN 1 END) as resolved
+		 FROM collision_results cr
+		 INNER JOIN collision_tasks ct ON cr.task_id = ct.id
+		 WHERE ct.model_id = $1`,
+		modelID,
+	)
+	stats := &model.CollisionStats{}
+	err := row.Scan(&stats.Total, &stats.Pending, &stats.Confirmed, &stats.False, &stats.Resolved)
+	if err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+func (r *PostgresRepo) GetCollisionResult(id string) (*model.CollisionResult, error) {
+	row := r.db.QueryRow(
+		`SELECT id, task_id, element_a_id, element_a_name, element_a_type, element_a_floor, element_b_id, element_b_name, element_b_type, element_b_floor, collision_type, collision_point, penetration, severity, status, created_at, updated_at 
+		 FROM collision_results WHERE id = $1`,
+		id,
+	)
+	cr := &model.CollisionResult{}
+	var pointStr string
+	var status string
+	err := row.Scan(&cr.ID, &cr.TaskID, &cr.ElementAID, &cr.ElementAName, &cr.ElementAType, &cr.ElementAFloor, &cr.ElementBID, &cr.ElementBName, &cr.ElementBType, &cr.ElementBFloor, &cr.CollisionType, &pointStr, &cr.Penetration, &cr.Severity, &status, &cr.CreatedAt, &cr.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var pt [3]float64
+	json.Unmarshal([]byte(pointStr), &pt)
+	cr.CollisionPoint = pt
+	cr.Status = model.CollisionStatus(status)
+	return cr, nil
+}
+
+func (r *PostgresRepo) CreateCollisionHistory(h *model.CollisionResultHistory) error {
+	_, err := r.db.Exec(
+		`INSERT INTO collision_result_history (id, result_id, task_id, old_status, new_status, remark, operator, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+		h.ID, h.ResultID, h.TaskID, h.OldStatus, h.NewStatus, h.Remark, h.Operator,
+	)
+	return err
+}
+
+func (r *PostgresRepo) GetCollisionHistory(resultID string) ([]*model.CollisionResultHistory, error) {
+	rows, err := r.db.Query(
+		`SELECT id, result_id, task_id, old_status, new_status, remark, operator, created_at 
+		 FROM collision_result_history WHERE result_id = $1 ORDER BY created_at DESC`,
+		resultID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var history []*model.CollisionResultHistory
+	for rows.Next() {
+		h := &model.CollisionResultHistory{}
+		var oldStatus, newStatus string
+		if err := rows.Scan(&h.ID, &h.ResultID, &h.TaskID, &oldStatus, &newStatus, &h.Remark, &h.Operator, &h.CreatedAt); err != nil {
+			return nil, err
+		}
+		h.OldStatus = model.CollisionStatus(oldStatus)
+		h.NewStatus = model.CollisionStatus(newStatus)
+		history = append(history, h)
+	}
+	return history, nil
+}
+
+func (r *PostgresRepo) UpdateCollisionResultStatus(resultID string, newStatus model.CollisionStatus, remark string, operator string) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	row := tx.QueryRow(`SELECT status, task_id FROM collision_results WHERE id = $1 FOR UPDATE`, resultID)
+	var oldStatus string
+	var taskID string
+	if err := row.Scan(&oldStatus, &taskID); err != nil {
+		return err
+	}
+
+	if oldStatus == string(newStatus) {
+		return tx.Commit()
+	}
+
+	_, err = tx.Exec(
+		`UPDATE collision_results SET status = $2, updated_at = NOW() WHERE id = $1`,
+		resultID, string(newStatus),
+	)
+	if err != nil {
+		return err
+	}
+
+	historyID := generateUUID()
+	_, err = tx.Exec(
+		`INSERT INTO collision_result_history (id, result_id, task_id, old_status, new_status, remark, operator, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+		historyID, resultID, taskID, oldStatus, string(newStatus), remark, operator,
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (r *PostgresRepo) BatchUpdateCollisionStatus(resultIDs []string, newStatus model.CollisionStatus, remark string, operator string) (int, error) {
+	if len(resultIDs) == 0 {
+		return 0, nil
+	}
+
+	tx, err := r.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	placeholders := make([]string, len(resultIDs))
+	args := make([]interface{}, len(resultIDs))
+	for i, id := range resultIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, status, task_id FROM collision_results WHERE id IN (%s) FOR UPDATE`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return 0, err
+	}
+
+	type resultInfo struct {
+		ID        string
+		OldStatus string
+		TaskID    string
+	}
+	var results []resultInfo
+	for rows.Next() {
+		var ri resultInfo
+		if err := rows.Scan(&ri.ID, &ri.OldStatus, &ri.TaskID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		results = append(results, ri)
+	}
+	rows.Close()
+
+	updated := 0
+	for _, ri := range results {
+		if ri.OldStatus == string(newStatus) {
+			continue
+		}
+
+		_, err = tx.Exec(
+			`UPDATE collision_results SET status = $2, updated_at = NOW() WHERE id = $1`,
+			ri.ID, string(newStatus),
+		)
+		if err != nil {
+			return 0, err
+		}
+
+		historyID := generateUUID()
+		_, err = tx.Exec(
+			`INSERT INTO collision_result_history (id, result_id, task_id, old_status, new_status, remark, operator, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+			historyID, ri.ID, ri.TaskID, ri.OldStatus, string(newStatus), remark, operator,
+		)
+		if err != nil {
+			return 0, err
+		}
+		updated++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+
+	return updated, nil
 }
 
 func (r *PostgresRepo) GetCollisionTask(id string) (*model.CollisionTask, error) {
@@ -412,4 +687,15 @@ func (r *PostgresRepo) scanElement(row *sql.Row) (*model.Element, error) {
 	json.Unmarshal([]byte(props), &e.Properties)
 	json.Unmarshal([]byte(lods), &e.MeshLODs)
 	return e, nil
+}
+
+func generateUUID() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		return fmt.Sprintf("uuid-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

@@ -73,19 +73,57 @@ type CollisionTask struct {
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
+type CollisionStatus string
+
+const (
+	CollisionStatusPending   CollisionStatus = "pending"
+	CollisionStatusConfirmed CollisionStatus = "confirmed"
+	CollisionStatusFalse     CollisionStatus = "false_positive"
+	CollisionStatusResolved  CollisionStatus = "resolved"
+)
+
 type CollisionResult struct {
-	ID              string    `json:"id"`
-	TaskID          string    `json:"taskId"`
-	ElementAID      string    `json:"elementAId"`
-	ElementAName    string    `json:"elementAName"`
-	ElementAType    string    `json:"elementAType"`
-	ElementAFloor   string    `json:"elementAFloor"`
-	ElementBID      string    `json:"elementBId"`
-	ElementBName    string    `json:"elementBName"`
-	ElementBType    string    `json:"elementBType"`
-	ElementBFloor   string    `json:"elementBFloor"`
-	CollisionType   string    `json:"collisionType"`
-	CollisionPoint  [3]float64 `json:"collisionPoint"`
-	Penetration     float64   `json:"penetration"`
-	Severity        string    `json:"severity"`
+	ID              string          `json:"id"`
+	TaskID          string          `json:"taskId"`
+	ElementAID      string          `json:"elementAId"`
+	ElementAName    string          `json:"elementAName"`
+	ElementAType    string          `json:"elementAType"`
+	ElementAFloor   string          `json:"elementAFloor"`
+	ElementBID      string          `json:"elementBId"`
+	ElementBName    string          `json:"elementBName"`
+	ElementBType    string          `json:"elementBType"`
+	ElementBFloor   string          `json:"elementBFloor"`
+	CollisionType   string          `json:"collisionType"`
+	CollisionPoint  [3]float64      `json:"collisionPoint"`
+	Penetration     float64         `json:"penetration"`
+	Severity        string          `json:"severity"`
+	Status          CollisionStatus `json:"status"`
+	CreatedAt       time.Time       `json:"createdAt"`
+	UpdatedAt       time.Time       `json:"updatedAt"`
+}
+
+type CollisionResultHistory struct {
+	ID            string          `json:"id"`
+	ResultID      string          `json:"resultId"`
+	TaskID        string          `json:"taskId"`
+	OldStatus     CollisionStatus `json:"oldStatus"`
+	NewStatus     CollisionStatus `json:"newStatus"`
+	Remark        string          `json:"remark"`
+	Operator      string          `json:"operator"`
+	CreatedAt     time.Time       `json:"createdAt"`
+}
+
+type CollisionStats struct {
+	Total     int `json:"total"`
+	Pending   int `json:"pending"`
+	Confirmed int `json:"confirmed"`
+	False     int `json:"false_positive"`
+	Resolved  int `json:"resolved"`
+}
+
+type UpdateStatusRequest struct {
+	ResultIDs []string        `json:"resultIds"`
+	NewStatus CollisionStatus `json:"newStatus"`
+	Remark    string          `json:"remark"`
+	Operator  string          `json:"operator"`
 }
