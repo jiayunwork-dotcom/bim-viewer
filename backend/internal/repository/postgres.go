@@ -138,6 +138,25 @@ func (r *PostgresRepo) Migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_collision_results_status ON collision_results(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_collision_history_result ON collision_result_history(result_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_collision_history_task ON collision_result_history(task_id)`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='collision_results' AND column_name='status') THEN
+				ALTER TABLE collision_results ADD COLUMN status VARCHAR(32) DEFAULT 'pending';
+			END IF;
+		END $$`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='collision_results' AND column_name='created_at') THEN
+				ALTER TABLE collision_results ADD COLUMN created_at TIMESTAMP DEFAULT NOW();
+			END IF;
+		END $$`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='collision_results' AND column_name='updated_at') THEN
+				ALTER TABLE collision_results ADD COLUMN updated_at TIMESTAMP DEFAULT NOW();
+			END IF;
+		END $$`,
+		`UPDATE collision_results SET status = 'pending' WHERE status IS NULL OR status = ''`,
 	}
 	for _, m := range migrations {
 		if _, err := r.db.Exec(m); err != nil {

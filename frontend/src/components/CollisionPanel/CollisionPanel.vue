@@ -549,17 +549,25 @@ function getTimelineType(status) {
   return typeMap[status] || 'info'
 }
 
+function padZero(n) {
+  return n < 10 ? '0' + n : '' + n
+}
+
 function formatDateTime(dateStr) {
   if (!dateStr) return ''
-  const date = new Date(dateStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
+  let date
+  if (dateStr instanceof Date) {
+    date = dateStr
+  } else {
+    if (typeof dateStr === 'string' && !dateStr.includes('T')) {
+      dateStr = dateStr.replace(' ', 'T')
+    }
+    date = new Date(dateStr)
+  }
+  if (isNaN(date.getTime())) {
+    return String(dateStr)
+  }
+  return `${date.getFullYear()}-${padZero(date.getMonth() + 1)}-${padZero(date.getDate())} ${padZero(date.getHours())}:${padZero(date.getMinutes())}:${padZero(date.getSeconds())}`
 }
 
 async function exportReport() {

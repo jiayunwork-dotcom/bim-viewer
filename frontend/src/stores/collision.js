@@ -111,6 +111,7 @@ export const useCollisionStore = defineStore('collision', () => {
     results.value = []
     stats.value = { total: 0, pending: 0, confirmed: 0, false_positive: 0, resolved: 0 }
     selectedIds.value = []
+    setCurrentModelId(modelId)
     try {
       const res = await api.post('/collision/detect', {
         modelId,
@@ -146,6 +147,7 @@ export const useCollisionStore = defineStore('collision', () => {
 
   async function fetchResultsByModel(modelId) {
     loading.value = true
+    setCurrentModelId(modelId)
     try {
       const res = await api.get(`/collision/model/${modelId}/results`)
       results.value = res.data
@@ -199,14 +201,15 @@ export const useCollisionStore = defineStore('collision', () => {
         remark,
         operator
       })
-      const result = results.value.find(r => r.id === resultId)
-      if (result) {
-        result.status = newStatus
-        result.updatedAt = new Date().toISOString()
+      const idx = results.value.findIndex(r => r.id === resultId)
+      if (idx > -1) {
+        results.value[idx] = {
+          ...results.value[idx],
+          status: newStatus,
+          updatedAt: new Date().toISOString()
+        }
       }
-      if (currentTaskId.value) {
-        await fetchStats(currentTaskId.value)
-      }
+      await refreshStats()
       return res.data
     } catch (err) {
       console.error('Failed to update status:', err)
@@ -215,29 +218,54 @@ export const useCollisionStore = defineStore('collision', () => {
   }
 
   async function batchUpdateStatus(newStatus, remark, operator = 'user') {
+    const targetIds = [...selectedIds.value]
     try {
       const res = await api.put('/collision/results/batch/status', {
-        resultIds: selectedIds.value,
+        resultIds: targetIds,
         newStatus,
         remark,
         operator
       })
-      for (const id of selectedIds.value) {
-        const result = results.value.find(r => r.id === id)
-        if (result) {
-          result.status = newStatus
-          result.updatedAt = new Date().toISOString()
+      for (const id of targetIds) {
+        const idx = results.value.findIndex(r => r.id === id)
+        if (idx > -1) {
+          results.value[idx] = {
+            ...results.value[idx],
+            status: newStatus,
+            updatedAt: new Date().toISOString()
+          }
         }
       }
-      if (currentTaskId.value) {
-        await fetchStats(currentTaskId.value)
-      }
       clearSelection()
+      await refreshStats()
       return res.data
     } catch (err) {
       console.error('Failed to batch update status:', err)
       throw err
     }
+  }
+
+  async function refreshStats() {
+    const modelId = getCurrentModelId()
+    if (modelId) {
+      try {
+        await fetchStatsByModel(modelId)
+      } catch (e) {
+        if (currentTaskId.value) {
+          await fetchStats(currentTaskId.value)
+        }
+      }
+    } else if (currentTaskId.value) {
+      await fetchStats(currentTaskId.value)
+    }
+  }
+
+  let _currentModelId = null
+  function setCurrentModelId(id) {
+    _currentModelId = id
+  }
+  function getCurrentModelId() {
+    return _currentModelId
   }
 
   async function exportCSV(taskId) {
