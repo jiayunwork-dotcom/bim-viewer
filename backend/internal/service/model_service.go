@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"bim-viewer/internal/model"
 	"bim-viewer/internal/repository"
@@ -306,4 +308,181 @@ func flattenSpatialTree(nodes []*model.SpatialNode) []*model.SpatialNode {
 		traverse(n)
 	}
 	return result
+}
+
+func (ms *ModelService) hashElementProperties(e *model.Element) string {
+	props := map[string]interface{}{
+		"name":         e.Name,
+		"type":         e.Type,
+		"category":     e.Category,
+		"aabbMin":      e.AABBMin,
+		"aabbMax":      e.AABBMax,
+		"properties":   e.Properties,
+		"geometryHash": e.GeometryHash,
+	}
+	
+	keys := make([]string, 0, len(props))
+	for k := range props {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	
+	h := sha256.New()
+	for _, k := range keys {
+		h.Write([]byte(k))
+		if b, err := json.Marshal(props[k]); err == nil {
+			h.Write(b)
+		}
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (ms *ModelService) CreateVersion(modelID, description string) (*model.ModelVersion, error) {
+	elements, err := ms.repo.GetElementsByModel(modelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get elements: %w", err)
+	}
+
+	snapshot := make(map[string]string)
+	for _, e := range elements {
+		snapshot[e.ID] = ms.hashElementProperties(e)
+	}
+
+	versionNumber, err := ms.repo.GetNextVersionNumber(modelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get next version number: %w", err)
+	}
+
+	versionID := generateUUID()
+	version := &model.ModelVersion{
+		ID:              versionID,
+		ModelID:         modelID,
+		VersionNumber:   versionNumber,
+		Description:     description,
+		ElementSnapshot: snapshot,
+	}
+
+	if err := ms.repo.CreateVersion(version); err != nil {
+		return nil, fmt.Errorf("failed to create version: %w", err)
+	}
+
+	return ms.repo.GetVersion(versionID)
+}
+
+func (ms *ModelService) GetVersion(versionID string) (*model.ModelVersion, error) {
+	return ms.repo.GetVersion(versionID)
+}
+
+func (ms *ModelService) ListVersions(modelID string) ([]*model.ModelVersion, error) {
+	return ms.repo.ListVersions(modelID)
+}
+
+func (ms *ModelService) DeleteVersion(versionID string) error {
+	return ms.repo.DeleteVersion(versionID)
+}
+
+func (ms *ModelService) CompareVersions(baseVersionID, compareVersionID string) (*model.VersionDiffResult, error) {
+	baseVersion, err := ms.repo.GetVersion(baseVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get base version: %w", err)
+	}
+	if baseVersion == nil {
+		return nil, fmt.Errorf("base version not found")
+	}
+
+	compareVersion, err := ms.repo.GetVersion(compareVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get compare version: %w", err)
+	}
+	if compareVersion == nil {
+		return nil, fmt.Errorf("compare version not found")
+	}
+
+	if baseVersion.ModelID != compareVersion.ModelID {
+		return nil, fmt.Errorf("versions must belong to the same model")
+	}
+
+	diff := &model.VersionDiff{
+		Added:     []string{},
+		Removed:   []string{},
+		Modified:  []string{},
+		Unchanged: []string{},
+	}
+
+	baseIDs := make(map[string]bool)
+	for id := range baseVersion.ElementSnapshot {
+		baseIDs[id] = true
+	}
+
+	compareIDs := make(map[string]bool)
+	for id := range compareVersion.ElementSnapshot {
+		compareIDs[id] = true
+	}
+
+	for id := range compareVersion.ElementSnapshot {
+		if !baseIDs[id] {
+			diff.Added = append(diff.Added, id)
+		}
+	}
+
+	for id := range baseVersion.ElementSnapshot {
+		if !compareIDs[id] {
+			diff.Removed = append(diff.Removed, id)
+		}
+	}
+
+	for id := range compareVersion.ElementSnapshot {
+		if baseIDs[id] {
+			if baseVersion.ElementSnapshot[id] != compareVersion.ElementSnapshot[id] {
+				diff.Modified = append(diff.Modified, id)
+			} else {
+				diff.Unchanged = append(diff.Unchanged, id)
+			}
+		}
+	}
+
+	sort.Strings(diff.Added)
+	sort.Strings(diff.Removed)
+	sort.Strings(diff.Modified)
+	sort.Strings(diff.Unchanged)
+
+	allElementIDs := make([]string, 0, len(diff.Added)+len(diff.Removed)+len(diff.Modified)+len(diff.Unchanged))
+	allElementIDs = append(allElementIDs, diff.Added...)
+	allElementIDs = append(allElementIDs, diff.Removed...)
+	allElementIDs = append(allElementIDs, diff.Modified...)
+	allElementIDs = append(allElementIDs, diff.Unchanged...)
+
+	elements, err := ms.repo.GetElementsByIDs(allElementIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get elements: %w", err)
+	}
+
+	elementMap := make(map[string]*model.Element)
+	for _, e := range elements {
+		elementMap[e.ID] = e
+	}
+
+	return &model.VersionDiffResult{
+		BaseVersion:     baseVersion,
+		CompareVersion:  compareVersion,
+		Diff:            diff,
+		BaseElements:    elementMap,
+		CompareElements: elementMap,
+	}, nil
+}
+
+func (ms *ModelService) GetVersionElement(versionID, elementID string) (*model.Element, error) {
+	version, err := ms.repo.GetVersion(versionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get version: %w", err)
+	}
+	if version == nil {
+		return nil, fmt.Errorf("version not found")
+	}
+
+	if _, exists := version.ElementSnapshot[elementID]; !exists {
+		return nil, nil
+	}
+
+	return ms.repo.GetElement(elementID)
 }

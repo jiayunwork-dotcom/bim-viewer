@@ -47,6 +47,7 @@ func main() {
 	collisionHandler := handler.NewCollisionHandler(collisionSvc, modelSvc)
 	annotationHandler := handler.NewAnnotationHandler(annotationSvc, wsHub)
 	constructionHandler := handler.NewConstructionHandler(constructionSvc)
+	versionHandler := handler.NewVersionHandler(modelSvc)
 
 	r := mux.NewRouter()
 	api := r.PathPrefix("/api/v1").Subrouter()
@@ -102,6 +103,13 @@ func main() {
 	api.HandleFunc("/construction/plans/{planId}/phases/{phaseId}", constructionHandler.UpdatePhase).Methods("PUT", "OPTIONS")
 	api.HandleFunc("/construction/plans/{planId}/phases/{phaseId}", constructionHandler.DeletePhase).Methods("DELETE", "OPTIONS")
 	api.HandleFunc("/construction/plans/{planId}/critical-path", constructionHandler.GetCriticalPath).Methods("GET", "OPTIONS")
+
+	api.HandleFunc("/models/{modelId}/versions", versionHandler.CreateVersion).Methods("POST", "OPTIONS")
+	api.HandleFunc("/models/{modelId}/versions", versionHandler.ListVersions).Methods("GET", "OPTIONS")
+	api.HandleFunc("/models/{modelId}/versions/compare", versionHandler.CompareVersions).Methods("POST", "OPTIONS")
+	api.HandleFunc("/versions/{versionId}", versionHandler.GetVersion).Methods("GET", "OPTIONS")
+	api.HandleFunc("/versions/{versionId}", versionHandler.DeleteVersion).Methods("DELETE", "OPTIONS")
+	api.HandleFunc("/versions/{versionId}/elements/{elementId}", versionHandler.GetVersionElement).Methods("GET", "OPTIONS")
 
 	r.HandleFunc("/ws/annotations", annotationHandler.HandleWebSocket)
 

@@ -127,3 +127,36 @@ type UpdateStatusRequest struct {
 	Remark    string          `json:"remark"`
 	Operator  string          `json:"operator"`
 }
+
+type ModelVersion struct {
+	ID              string                 `json:"id"`
+	ModelID         string                 `json:"modelId"`
+	VersionNumber   string                 `json:"versionNumber"`
+	Description     string                 `json:"description"`
+	ElementSnapshot map[string]string      `json:"elementSnapshot"`
+	CreatedAt       time.Time              `json:"createdAt"`
+}
+
+type VersionDiff struct {
+	Added    []string `json:"added"`
+	Removed  []string `json:"removed"`
+	Modified []string `json:"modified"`
+	Unchanged []string `json:"unchanged"`
+}
+
+type VersionDiffResult struct {
+	BaseVersion     *ModelVersion `json:"baseVersion"`
+	CompareVersion  *ModelVersion `json:"compareVersion"`
+	Diff            *VersionDiff  `json:"diff"`
+	BaseElements    map[string]*Element `json:"baseElements,omitempty"`
+	CompareElements map[string]*Element `json:"compareElements,omitempty"`
+}
+
+type CreateVersionRequest struct {
+	Description string `json:"description"`
+}
+
+type CompareVersionsRequest struct {
+	BaseVersionID    string `json:"baseVersionId"`
+	CompareVersionID string `json:"compareVersionId"`
+}

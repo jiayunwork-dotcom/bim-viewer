@@ -43,6 +43,10 @@ export class BIMRenderer {
     this.dueSoonAnnotationIds = new Set()
     this.pulseTime = 0
     this.pulseSpeed = 0.003
+    this.compareMode = false
+    this.elementDiffMap = new Map()
+    this.originalMaterials = new Map()
+    this.diffFilterType = 'all'
 
     this._init()
   }
@@ -1238,6 +1242,142 @@ export class BIMRenderer {
 
   getFPS() {
     return this.fps
+  }
+
+  setCompareMode(enabled, elementDiffMap = null) {
+    this.compareMode = enabled
+    if (enabled && elementDiffMap) {
+      this.elementDiffMap = new Map(Object.entries(elementDiffMap))
+      this._saveAllOriginalMaterials()
+      this.applyDiffColors()
+    } else if (!enabled) {
+      this.restoreOriginalColors()
+      this.elementDiffMap.clear()
+      this.diffFilterType = 'all'
+    }
+  }
+
+  _saveAllOriginalMaterials() {
+    this.originalMaterials.clear()
+    
+    for (const [elementId, mesh] of this.elementMeshes) {
+      if (mesh && !mesh.isInstancedMesh) {
+        this.originalMaterials.set(elementId, {
+          color: mesh.material.color.clone(),
+          transparent: mesh.material.transparent,
+          opacity: mesh.material.opacity
+        })
+      }
+    }
+
+    for (const [key, instancedMesh] of this.instanceGroups) {
+      if (instancedMesh) {
+        this.originalMaterials.set(key, {
+          color: instancedMesh.material.color.clone(),
+          transparent: instancedMesh.material.transparent,
+          opacity: instancedMesh.material.opacity
+        })
+      }
+    }
+  }
+
+  _getDiffSettings(diffType) {
+    const settings = {
+      added: { color: 0x00ff00, transparent: true, opacity: 0.6 },
+      removed: { color: 0xff0000, transparent: true, opacity: 0.6 },
+      modified: { color: 0xffff00, transparent: false, opacity: 1.0 },
+      unchanged: { color: 0x888888, transparent: true, opacity: 0.3 }
+    }
+    return settings[diffType] || settings.unchanged
+  }
+
+  applyDiffColors() {
+    if (!this.compareMode) return
+
+    const diffColors = {
+      added: new THREE.Color(0x00ff00),
+      removed: new THREE.Color(0xff0000),
+      modified: new THREE.Color(0xffff00),
+      unchanged: new THREE.Color(0x888888)
+    }
+
+    const diffOpacities = {
+      added: 0.6,
+      removed: 0.6,
+      modified: 1.0,
+      unchanged: 0.3
+    }
+
+    for (const [elementId, diffType] of this.elementDiffMap) {
+      const color = diffColors[diffType]
+      const opacity = diffOpacities[diffType]
+      const transparent = diffType !== 'modified'
+
+      const isVisible = this.diffFilterType === 'all' || this.diffFilterType === diffType
+      const targetOpacity = isVisible ? opacity : 0.05
+
+      const lodMeshes = this.elementMeshesByLOD.get(elementId)
+      if (lodMeshes) {
+        for (const mesh of lodMeshes) {
+          if (mesh && !mesh.isInstancedMesh) {
+            mesh.material.color.copy(color)
+            mesh.material.transparent = true
+            mesh.material.opacity = targetOpacity
+            mesh.material.needsUpdate = true
+          }
+        }
+      }
+
+      const instInfo = this.elementInstanceInfo.get(elementId)
+      if (instInfo) {
+        for (let lod = 0; lod < 3; lod++) {
+          const instMesh = this.instanceGroups.get(`${instInfo.geometryHash}_lod${lod}`)
+          if (instMesh) {
+            instMesh.material.color.copy(color)
+            instMesh.material.transparent = true
+            instMesh.material.opacity = targetOpacity
+            instMesh.material.needsUpdate = true
+          }
+        }
+      }
+    }
+  }
+
+  setDiffFilter(filterType) {
+    this.diffFilterType = filterType
+    this.applyDiffColors()
+  }
+
+  restoreOriginalColors() {
+    for (const [elementId, original] of this.originalMaterials) {
+      const lodMeshes = this.elementMeshesByLOD.get(elementId)
+      if (lodMeshes) {
+        for (const mesh of lodMeshes) {
+          if (mesh && !mesh.isInstancedMesh) {
+            mesh.material.color.copy(original.color)
+            mesh.material.transparent = original.transparent
+            mesh.material.opacity = original.opacity
+            mesh.material.needsUpdate = true
+          }
+        }
+      }
+
+      if (elementId.includes('_lod')) {
+        const instMesh = this.instanceGroups.get(elementId)
+        if (instMesh) {
+          instMesh.material.color.copy(original.color)
+          instMesh.material.transparent = original.transparent
+          instMesh.material.opacity = original.opacity
+          instMesh.material.needsUpdate = true
+        }
+      }
+    }
+
+    this.originalMaterials.clear()
+  }
+
+  exitCompareMode() {
+    this.setCompareMode(false)
   }
 
   dispose() {

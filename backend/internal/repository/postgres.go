@@ -157,6 +157,16 @@ func (r *PostgresRepo) Migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_collision_results_status ON collision_results(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_collision_history_result ON collision_result_history(result_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_collision_history_task ON collision_result_history(task_id)`,
+		`CREATE TABLE IF NOT EXISTS model_versions (
+			id VARCHAR(64) PRIMARY KEY,
+			model_id VARCHAR(64) REFERENCES models(id) ON DELETE CASCADE,
+			version_number VARCHAR(32) NOT NULL,
+			description TEXT,
+			element_snapshot JSONB,
+			created_at TIMESTAMP DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_model_versions_model_id ON model_versions(model_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_model_versions_version ON model_versions(model_id, version_number)`,
 	}
 	for _, m := range migrations {
 		if _, err := r.db.Exec(m); err != nil {
@@ -717,4 +727,79 @@ func generateUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func (r *PostgresRepo) CreateVersion(v *model.ModelVersion) error {
+	snapshotJSON, _ := json.Marshal(v.ElementSnapshot)
+	_, err := r.db.Exec(
+		`INSERT INTO model_versions (id, model_id, version_number, description, element_snapshot, created_at)
+		 VALUES ($1, $2, $3, $4, $5, NOW())`,
+		v.ID, v.ModelID, v.VersionNumber, v.Description, snapshotJSON,
+	)
+	return err
+}
+
+func (r *PostgresRepo) GetVersion(id string) (*model.ModelVersion, error) {
+	row := r.db.QueryRow(
+		`SELECT id, model_id, version_number, description, element_snapshot, created_at 
+		 FROM model_versions WHERE id = $1`,
+		id,
+	)
+	return r.scanVersion(row)
+}
+
+func (r *PostgresRepo) ListVersions(modelID string) ([]*model.ModelVersion, error) {
+	rows, err := r.db.Query(
+		`SELECT id, model_id, version_number, description, element_snapshot, created_at 
+		 FROM model_versions WHERE model_id = $1 ORDER BY created_at DESC`,
+		modelID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var versions []*model.ModelVersion
+	for rows.Next() {
+		v := &model.ModelVersion{}
+		var snapshotStr string
+		err := rows.Scan(&v.ID, &v.ModelID, &v.VersionNumber, &v.Description, &snapshotStr, &v.CreatedAt)
+		if err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(snapshotStr), &v.ElementSnapshot)
+		versions = append(versions, v)
+	}
+	return versions, nil
+}
+
+func (r *PostgresRepo) GetNextVersionNumber(modelID string) (string, error) {
+	row := r.db.QueryRow(
+		`SELECT COUNT(*) FROM model_versions WHERE model_id = $1`,
+		modelID,
+	)
+	var count int
+	err := row.Scan(&count)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("v%d", count+1), nil
+}
+
+func (r *PostgresRepo) DeleteVersion(id string) error {
+	_, err := r.db.Exec(`DELETE FROM model_versions WHERE id = $1`, id)
+	return err
+}
+
+func (r *PostgresRepo) scanVersion(row *sql.Row) (*model.ModelVersion, error) {
+	v := &model.ModelVersion{}
+	var snapshotStr string
+	err := row.Scan(&v.ID, &v.ModelID, &v.VersionNumber, &v.Description, &snapshotStr, &v.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal([]byte(snapshotStr), &v.ElementSnapshot)
+	return v, nil
 }

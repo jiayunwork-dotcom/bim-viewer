@@ -100,6 +100,10 @@
       <CollisionPanel :renderer="renderer" :model-id="modelStore.currentModel?.id" />
     </div>
 
+    <div class="bottom-panel" v-show="viewerStore.activePanel === 'version'">
+      <VersionComparePanel :renderer="renderer" :model-id="modelStore.currentModel?.id" />
+    </div>
+
     <div class="side-buttons">
       <el-tooltip content="模型树" placement="left">
         <el-button
@@ -149,6 +153,16 @@
           @click="viewerStore.setActivePanel('construction')"
         >
           <el-icon><Timer /></el-icon>
+        </el-button>
+      </el-tooltip>
+      <el-tooltip content="版本对比" placement="left">
+        <el-button
+          :type="viewerStore.activePanel === 'version' ? 'primary' : 'default'"
+          size="small"
+          circle
+          @click="viewerStore.setActivePanel('version')"
+        >
+          <el-icon><Files /></el-icon>
         </el-button>
       </el-tooltip>
     </div>
@@ -216,24 +230,29 @@ import { useMeasureStore } from '../../stores/measure'
 import { useCollisionStore } from '../../stores/collision'
 import { useAnnotationStore } from '../../stores/annotation'
 import { useConstructionStore } from '../../stores/construction'
+import { useVersionStore } from '../../stores/version'
 import { BIMRenderer } from '../../utils/BIMRenderer'
 import TreePanel from '../TreePanel/TreePanel.vue'
 import PropertyPanel from '../PropertyPanel/PropertyPanel.vue'
 import CollisionPanel from '../CollisionPanel/CollisionPanel.vue'
 import AnnotationPanel from '../AnnotationPanel/AnnotationPanel.vue'
 import ConstructionPlanPanel from '../ConstructionPanel/ConstructionPlanPanel.vue'
+import VersionComparePanel from '../VersionComparePanel/VersionComparePanel.vue'
 import TimelinePlayer from '../ConstructionPanel/TimelinePlayer.vue'
 import ContextMenu from '../ContextMenu/ContextMenu.vue'
 import * as THREE from 'three'
 import { ElMessage } from 'element-plus'
+import { Files } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const modelStore = useModelStore()
 const viewerStore = useViewerStore()
 const clipStore = useClipStore()
 const measureStore = useMeasureStore()
+const collisionStore = useCollisionStore()
 const annotationStore = useAnnotationStore()
 const constructionStore = useConstructionStore()
+const versionStore = useVersionStore()
 
 const viewerContainer = ref(null)
 const canvasContainer = ref(null)
@@ -396,6 +415,24 @@ function createElementGeometry(element) {
 }
 
 function handleElementClick(elementId, shiftKey, contextMenuPos) {
+  if (versionStore.compareMode) {
+    if (contextMenuPos) {
+      viewerStore.showContextMenu(contextMenuPos.x, contextMenuPos.y, elementId)
+      return
+    }
+
+    const diffType = versionStore.getElementDiffType(elementId)
+    if (diffType) {
+      versionStore.selectElement(elementId)
+      const color = versionStore.getElementDiffColor(elementId)
+      if (color && renderer.value) {
+        renderer.value.highlightElement(elementId, color)
+      }
+      viewerStore.setActivePanel('version')
+      return
+    }
+  }
+
   if (constructionStore.playbackActive) {
     const opacity = constructionStore.getElementOpacity(elementId, constructionStore.currentDate)
     if (opacity <= 0) return
