@@ -160,3 +160,60 @@ type CompareVersionsRequest struct {
 	BaseVersionID    string `json:"baseVersionId"`
 	CompareVersionID string `json:"compareVersionId"`
 }
+
+type VersionAnnotation struct {
+	ID                string    `json:"id"`
+	VersionCompareID  string    `json:"versionCompareId"`
+	BaseVersionID     string    `json:"baseVersionId"`
+	CompareVersionID  string    `json:"compareVersionId"`
+	ElementID         string    `json:"elementId"`
+	Content           string    `json:"content"`
+	Author            string    `json:"author"`
+	CreatedAt         time.Time `json:"createdAt"`
+}
+
+type CreateVersionAnnotationRequest struct {
+	BaseVersionID    string `json:"baseVersionId"`
+	CompareVersionID string `json:"compareVersionId"`
+	ElementID        string `json:"elementId"`
+	Content          string `json:"content"`
+	Author           string `json:"author"`
+}
+
+type VersionCompareReport struct {
+	MetaInfo        ReportMetaInfo         `json:"metaInfo"`
+	DiffStats       ReportDiffStats        `json:"diffStats"`
+	ChangedElements []ReportChangedElement `json:"changedElements"`
+	Annotations     []VersionAnnotation    `json:"annotations"`
+}
+
+type ReportMetaInfo struct {
+	ModelName        string    `json:"modelName"`
+	BaseVersion      string    `json:"baseVersion"`
+	CompareVersion   string    `json:"compareVersion"`
+	BaseVersionDesc  string    `json:"baseVersionDesc"`
+	CompareVersionDesc string  `json:"compareVersionDesc"`
+	CompareTime      time.Time `json:"compareTime"`
+}
+
+type ReportDiffStats struct {
+	Added     int `json:"added"`
+	Removed   int `json:"removed"`
+	Modified  int `json:"modified"`
+	Unchanged int `json:"unchanged"`
+	Total     int `json:"total"`
+}
+
+type ReportChangedElement struct {
+	ElementID      string                 `json:"elementId"`
+	ElementName    string                 `json:"elementName"`
+	ElementType    string                 `json:"elementType"`
+	ChangeType     string                 `json:"changeType"`
+	PropertyDiffs  []ReportPropertyDiff   `json:"propertyDiffs"`
+}
+
+type ReportPropertyDiff struct {
+	PropertyName  string      `json:"propertyName"`
+	BaseValue     interface{} `json:"baseValue"`
+	CompareValue  interface{} `json:"compareValue"`
+}

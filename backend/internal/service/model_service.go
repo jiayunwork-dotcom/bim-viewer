@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"bim-viewer/internal/model"
 	"bim-viewer/internal/repository"
 )
@@ -485,4 +487,221 @@ func (ms *ModelService) GetVersionElement(versionID, elementID string) (*model.E
 	}
 
 	return ms.repo.GetElement(elementID)
+}
+
+func (ms *ModelService) CreateVersionAnnotation(req *model.CreateVersionAnnotationRequest) (*model.VersionAnnotation, error) {
+	trimmedContent := strings.TrimSpace(req.Content)
+	if trimmedContent == "" {
+		return nil, fmt.Errorf("批注内容不能为空")
+	}
+	if len(trimmedContent) > 500 {
+		return nil, fmt.Errorf("批注内容不能超过500字符")
+	}
+
+	baseVersion, err := ms.repo.GetVersion(req.BaseVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get base version: %w", err)
+	}
+	if baseVersion == nil {
+		return nil, fmt.Errorf("base version not found")
+	}
+
+	compareVersion, err := ms.repo.GetVersion(req.CompareVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get compare version: %w", err)
+	}
+	if compareVersion == nil {
+		return nil, fmt.Errorf("compare version not found")
+	}
+
+	if baseVersion.ModelID != compareVersion.ModelID {
+		return nil, fmt.Errorf("versions must belong to the same model")
+	}
+
+	author := req.Author
+	if author == "" {
+		author = "anonymous"
+	}
+
+	annotation := &model.VersionAnnotation{
+		ID:               generateServiceUUID(),
+		BaseVersionID:    req.BaseVersionID,
+		CompareVersionID: req.CompareVersionID,
+		ElementID:        req.ElementID,
+		Content:          trimmedContent,
+		Author:           author,
+	}
+
+	if err := ms.repo.CreateVersionAnnotation(annotation); err != nil {
+		return nil, fmt.Errorf("failed to create version annotation: %w", err)
+	}
+
+	return ms.repo.GetVersionAnnotation(annotation.ID)
+}
+
+func (ms *ModelService) GetVersionAnnotation(id string) (*model.VersionAnnotation, error) {
+	return ms.repo.GetVersionAnnotation(id)
+}
+
+func (ms *ModelService) ListVersionAnnotations(baseVersionID, compareVersionID string) ([]*model.VersionAnnotation, error) {
+	return ms.repo.ListVersionAnnotations(baseVersionID, compareVersionID)
+}
+
+func (ms *ModelService) DeleteVersionAnnotation(id, currentUser string) error {
+	author, err := ms.repo.GetVersionAnnotationAuthor(id)
+	if err != nil {
+		return fmt.Errorf("failed to get annotation author: %w", err)
+	}
+	if author == "" {
+		return fmt.Errorf("annotation not found")
+	}
+
+	if currentUser != "" && author != currentUser && author != "anonymous" {
+		return fmt.Errorf("permission denied: only author can delete this annotation")
+	}
+
+	return ms.repo.DeleteVersionAnnotation(id)
+}
+
+func (ms *ModelService) GenerateVersionCompareReport(baseVersionID, compareVersionID string) (*model.VersionCompareReport, error) {
+	diffResult, err := ms.CompareVersions(baseVersionID, compareVersionID)
+	if err != nil {
+		return nil, err
+	}
+
+	baseVersion := diffResult.BaseVersion
+	compareVersion := diffResult.CompareVersion
+
+	modelInfo, err := ms.repo.GetModel(baseVersion.ModelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get model info: %w", err)
+	}
+
+	annotations, err := ms.repo.ListVersionAnnotations(baseVersionID, compareVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list annotations: %w", err)
+	}
+
+	annotationList := []model.VersionAnnotation{}
+	for _, a := range annotations {
+		annotationList = append(annotationList, *a)
+	}
+
+	diff := diffResult.Diff
+	changedElements := []model.ReportChangedElement{}
+
+	changeTypeMap := map[string]string{}
+	for _, id := range diff.Added {
+		changeTypeMap[id] = "added"
+	}
+	for _, id := range diff.Removed {
+		changeTypeMap[id] = "removed"
+	}
+	for _, id := range diff.Modified {
+		changeTypeMap[id] = "modified"
+	}
+
+	allChangedIDs := append(append(diff.Added, diff.Removed...), diff.Modified...)
+	for _, elementID := range allChangedIDs {
+		changeType := changeTypeMap[elementID]
+		baseElement := diffResult.BaseElements[elementID]
+		compareElement := diffResult.CompareElements[elementID]
+
+		elementName := ""
+		elementType := ""
+		if compareElement != nil {
+			elementName = compareElement.Name
+			elementType = compareElement.Type
+		} else if baseElement != nil {
+			elementName = baseElement.Name
+			elementType = baseElement.Type
+		}
+
+		propertyDiffs := []model.ReportPropertyDiff{}
+		if changeType == "modified" && baseElement != nil && compareElement != nil {
+			baseProps := map[string]interface{}{
+				"名称":  baseElement.Name,
+				"类型":  baseElement.Type,
+				"分类":  baseElement.Category,
+				"楼层":  baseElement.FloorName,
+				"几何哈希": baseElement.GeometryHash,
+			}
+			compareProps := map[string]interface{}{
+				"名称":  compareElement.Name,
+				"类型":  compareElement.Type,
+				"分类":  compareElement.Category,
+				"楼层":  compareElement.FloorName,
+				"几何哈希": compareElement.GeometryHash,
+			}
+			for k, v := range baseElement.Properties {
+				baseProps[k] = v
+			}
+			for k, v := range compareElement.Properties {
+				compareProps[k] = v
+			}
+
+			allKeys := map[string]bool{}
+			for k := range baseProps {
+				allKeys[k] = true
+			}
+			for k := range compareProps {
+				allKeys[k] = true
+			}
+
+			for key := range allKeys {
+				baseVal := baseProps[key]
+				compareVal := compareProps[key]
+				baseStr := fmt.Sprintf("%v", baseVal)
+				compareStr := fmt.Sprintf("%v", compareVal)
+				if baseStr != compareStr {
+					propertyDiffs = append(propertyDiffs, model.ReportPropertyDiff{
+						PropertyName: key,
+						BaseValue:    baseVal,
+						CompareValue: compareVal,
+					})
+				}
+			}
+		}
+
+		changedElements = append(changedElements, model.ReportChangedElement{
+			ElementID:     elementID,
+			ElementName:   elementName,
+			ElementType:   elementType,
+			ChangeType:    changeType,
+			PropertyDiffs: propertyDiffs,
+		})
+	}
+
+	report := &model.VersionCompareReport{
+		MetaInfo: model.ReportMetaInfo{
+			ModelName:         modelInfo.Name,
+			BaseVersion:       baseVersion.VersionNumber,
+			CompareVersion:    compareVersion.VersionNumber,
+			BaseVersionDesc:   baseVersion.Description,
+			CompareVersionDesc: compareVersion.Description,
+			CompareTime:       time.Now(),
+		},
+		DiffStats: model.ReportDiffStats{
+			Added:     len(diff.Added),
+			Removed:   len(diff.Removed),
+			Modified:  len(diff.Modified),
+			Unchanged: len(diff.Unchanged),
+			Total:     len(diff.Added) + len(diff.Removed) + len(diff.Modified) + len(diff.Unchanged),
+		},
+		ChangedElements: changedElements,
+		Annotations:     annotationList,
+	}
+
+	return report, nil
+}
+
+func generateServiceUUID() string {
+	b := make([]byte, 16)
+	_, err := rand.Read(b)
+	if err != nil {
+		return fmt.Sprintf("uuid-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

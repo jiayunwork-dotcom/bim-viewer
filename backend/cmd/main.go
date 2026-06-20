@@ -107,9 +107,13 @@ func main() {
 	api.HandleFunc("/models/{modelId}/versions", versionHandler.CreateVersion).Methods("POST", "OPTIONS")
 	api.HandleFunc("/models/{modelId}/versions", versionHandler.ListVersions).Methods("GET", "OPTIONS")
 	api.HandleFunc("/models/{modelId}/versions/compare", versionHandler.CompareVersions).Methods("POST", "OPTIONS")
+	api.HandleFunc("/models/{modelId}/versions/report", versionHandler.ExportCompareReport).Methods("POST", "OPTIONS")
 	api.HandleFunc("/versions/{versionId}", versionHandler.GetVersion).Methods("GET", "OPTIONS")
 	api.HandleFunc("/versions/{versionId}", versionHandler.DeleteVersion).Methods("DELETE", "OPTIONS")
 	api.HandleFunc("/versions/{versionId}/elements/{elementId}", versionHandler.GetVersionElement).Methods("GET", "OPTIONS")
+	api.HandleFunc("/version-annotations", versionHandler.CreateVersionAnnotation).Methods("POST", "OPTIONS")
+	api.HandleFunc("/version-annotations", versionHandler.ListVersionAnnotations).Methods("GET", "OPTIONS")
+	api.HandleFunc("/version-annotations/{id}", versionHandler.DeleteVersionAnnotation).Methods("DELETE", "OPTIONS")
 
 	r.HandleFunc("/ws/annotations", annotationHandler.HandleWebSocket)
 

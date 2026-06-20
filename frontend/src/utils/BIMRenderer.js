@@ -47,6 +47,7 @@ export class BIMRenderer {
     this.elementDiffMap = new Map()
     this.originalMaterials = new Map()
     this.diffFilterType = 'all'
+    this.versionAnnotationPins = new Map()
 
     this._init()
   }
@@ -1254,6 +1255,7 @@ export class BIMRenderer {
       this.restoreOriginalColors()
       this.elementDiffMap.clear()
       this.diffFilterType = 'all'
+      this.clearVersionAnnotationPins()
     }
   }
 
@@ -1378,6 +1380,196 @@ export class BIMRenderer {
 
   exitCompareMode() {
     this.setCompareMode(false)
+  }
+
+  addVersionAnnotationPin(elementId) {
+    if (this.versionAnnotationPins.has(elementId)) return
+
+    const lodMeshes = this.elementMeshesByLOD.get(elementId)
+    if (!lodMeshes || lodMeshes.length === 0) return
+
+    const sourceMesh = lodMeshes.find(m => m && m.visible) || lodMeshes[0]
+    if (!sourceMesh) return
+
+    let position = null
+
+    if (sourceMesh.isInstancedMesh) {
+      const instances = sourceMesh.userData.instances
+      if (!instances) return
+      const idx = instances.findIndex(inst => inst.elementId === elementId)
+      if (idx < 0) return
+      const matrix = new THREE.Matrix4()
+      sourceMesh.getMatrixAt(idx, matrix)
+      const pos = new THREE.Vector3()
+      const quat = new THREE.Quaternion()
+      const scale = new THREE.Vector3()
+      matrix.decompose(pos, quat, scale)
+      position = pos
+    } else {
+      if (!sourceMesh.geometry.boundingBox) {
+        sourceMesh.geometry.computeBoundingBox()
+      }
+      const bbox = sourceMesh.geometry.boundingBox.clone()
+      bbox.applyMatrix4(sourceMesh.matrixWorld)
+      position = new THREE.Vector3()
+      bbox.getCenter(position)
+    }
+
+    if (!position) return
+
+    const group = new THREE.Group()
+    group.userData = { elementId, isVersionAnnotationPin: true }
+
+    const pinHeight = 500
+    const bubbleRadius = 180
+
+    const stickGeo = new THREE.CylinderGeometry(30, 30, pinHeight, 8)
+    const stickMat = new THREE.MeshBasicMaterial({
+      color: 0xff9800,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false
+    })
+    const stick = new THREE.Mesh(stickGeo, stickMat)
+    stick.position.y = pinHeight / 2
+    stick.renderOrder = 998
+    group.add(stick)
+
+    const bubbleGeo = new THREE.SphereGeometry(bubbleRadius, 16, 16)
+    const bubbleMat = new THREE.MeshBasicMaterial({
+      color: 0xff9800,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false
+    })
+    const bubble = new THREE.Mesh(bubbleGeo, bubbleMat)
+    bubble.position.y = pinHeight + bubbleRadius
+    bubble.renderOrder = 999
+    group.add(bubble)
+
+    const iconGeo = new THREE.RingGeometry(bubbleRadius * 0.3, bubbleRadius * 0.6, 32)
+    const iconMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 1.0,
+      depthTest: false,
+      side: THREE.DoubleSide
+    })
+    const icon = new THREE.Mesh(iconGeo, iconMat)
+    icon.position.y = pinHeight + bubbleRadius
+    icon.rotation.x = -Math.PI / 2
+    icon.renderOrder = 999
+    group.add(icon)
+
+    group.position.set(position.x, position.y, position.z)
+
+    this.scene.add(group)
+    this.versionAnnotationPins.set(elementId, group)
+  }
+
+  removeVersionAnnotationPin(elementId) {
+    const group = this.versionAnnotationPins.get(elementId)
+    if (group) {
+      this.scene.remove(group)
+      group.traverse(child => {
+        if (child.geometry) child.geometry.dispose()
+        if (child.material) child.material.dispose()
+      })
+      this.versionAnnotationPins.delete(elementId)
+    }
+  }
+
+  clearVersionAnnotationPins() {
+    for (const [elementId] of this.versionAnnotationPins) {
+      this.removeVersionAnnotationPin(elementId)
+    }
+  }
+
+  updateVersionAnnotationPins(elementIds) {
+    const targetSet = new Set(elementIds)
+    for (const [id] of this.versionAnnotationPins) {
+      if (!targetSet.has(id)) {
+        this.removeVersionAnnotationPin(id)
+      }
+    }
+    for (const id of elementIds) {
+      if (!this.versionAnnotationPins.has(id)) {
+        this.addVersionAnnotationPin(id)
+      }
+    }
+  }
+
+  focusOnElement(elementId) {
+    const lodMeshes = this.elementMeshesByLOD.get(elementId)
+    if (!lodMeshes || lodMeshes.length === 0) return
+
+    const sourceMesh = lodMeshes.find(m => m && m.visible) || lodMeshes[0]
+    if (!sourceMesh) return
+
+    let bbox = null
+
+    if (sourceMesh.isInstancedMesh) {
+      const instances = sourceMesh.userData.instances
+      if (!instances) return
+      const idx = instances.findIndex(inst => inst.elementId === elementId)
+      if (idx < 0) return
+      const matrix = new THREE.Matrix4()
+      sourceMesh.getMatrixAt(idx, matrix)
+      const pos = new THREE.Vector3()
+      const quat = new THREE.Quaternion()
+      const scale = new THREE.Vector3()
+      matrix.decompose(pos, quat, scale)
+      if (!sourceMesh.geometry.boundingBox) {
+        sourceMesh.geometry.computeBoundingBox()
+      }
+      bbox = sourceMesh.geometry.boundingBox.clone()
+      const scaleMatrix = new THREE.Matrix4().makeScale(scale.x, scale.y, scale.z)
+      const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quat)
+      const translationMatrix = new THREE.Matrix4().makeTranslation(pos.x, pos.y, pos.z)
+      const transform = new THREE.Matrix4().multiplyMatrices(rotationMatrix, scaleMatrix)
+      bbox.applyMatrix4(transform)
+      bbox.translate(pos)
+    } else {
+      if (!sourceMesh.geometry.boundingBox) {
+        sourceMesh.geometry.computeBoundingBox()
+      }
+      bbox = sourceMesh.geometry.boundingBox.clone()
+      bbox.applyMatrix4(sourceMesh.matrixWorld)
+    }
+
+    if (!bbox) return
+
+    const center = new THREE.Vector3()
+    bbox.getCenter(center)
+    const size = new THREE.Vector3()
+    bbox.getSize(size)
+    const maxDim = Math.max(size.x, size.y, size.z)
+    const fov = this.camera.fov * (Math.PI / 180)
+    let distance = maxDim / 2 / Math.tan(fov / 2)
+    distance *= 2.0
+
+    const direction = new THREE.Vector3(1, 1, 1).normalize()
+    const targetPosition = new THREE.Vector3().copy(center).add(direction.multiplyScalar(distance))
+
+    const startPosition = this.camera.position.clone()
+    const startTarget = this.controls.target.clone()
+    const duration = 600
+    const startTime = performance.now()
+
+    const animate = () => {
+      const elapsed = performance.now() - startTime
+      const t = Math.min(elapsed / duration, 1)
+      const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
+
+      this.camera.position.lerpVectors(startPosition, targetPosition, eased)
+      this.controls.target.lerpVectors(startTarget, center, eased)
+      this.controls.update()
+
+      if (t < 1) {
+        requestAnimationFrame(animate)
+      }
+    }
+    animate()
   }
 
   dispose() {

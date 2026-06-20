@@ -167,6 +167,17 @@ func (r *PostgresRepo) Migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_model_versions_model_id ON model_versions(model_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_model_versions_version ON model_versions(model_id, version_number)`,
+		`CREATE TABLE IF NOT EXISTS version_annotations (
+			id VARCHAR(64) PRIMARY KEY,
+			base_version_id VARCHAR(64) REFERENCES model_versions(id) ON DELETE CASCADE,
+			compare_version_id VARCHAR(64) REFERENCES model_versions(id) ON DELETE CASCADE,
+			element_id VARCHAR(64) NOT NULL,
+			content TEXT NOT NULL,
+			author VARCHAR(128) NOT NULL DEFAULT 'anonymous',
+			created_at TIMESTAMP DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_version_annotations_versions ON version_annotations(base_version_id, compare_version_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_version_annotations_element ON version_annotations(element_id)`,
 	}
 	for _, m := range migrations {
 		if _, err := r.db.Exec(m); err != nil {
@@ -802,4 +813,65 @@ func (r *PostgresRepo) scanVersion(row *sql.Row) (*model.ModelVersion, error) {
 	}
 	json.Unmarshal([]byte(snapshotStr), &v.ElementSnapshot)
 	return v, nil
+}
+
+func (r *PostgresRepo) CreateVersionAnnotation(a *model.VersionAnnotation) error {
+	_, err := r.db.Exec(
+		`INSERT INTO version_annotations (id, base_version_id, compare_version_id, element_id, content, author, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+		a.ID, a.BaseVersionID, a.CompareVersionID, a.ElementID, a.Content, a.Author,
+	)
+	return err
+}
+
+func (r *PostgresRepo) GetVersionAnnotation(id string) (*model.VersionAnnotation, error) {
+	row := r.db.QueryRow(
+		`SELECT id, base_version_id, compare_version_id, element_id, content, author, created_at
+		 FROM version_annotations WHERE id = $1`, id,
+	)
+	a := &model.VersionAnnotation{}
+	err := row.Scan(&a.ID, &a.BaseVersionID, &a.CompareVersionID, &a.ElementID, &a.Content, &a.Author, &a.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
+}
+
+func (r *PostgresRepo) ListVersionAnnotations(baseVersionID, compareVersionID string) ([]*model.VersionAnnotation, error) {
+	rows, err := r.db.Query(
+		`SELECT id, base_version_id, compare_version_id, element_id, content, author, created_at
+		 FROM version_annotations 
+		 WHERE base_version_id = $1 AND compare_version_id = $2
+		 ORDER BY created_at DESC`,
+		baseVersionID, compareVersionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var annotations []*model.VersionAnnotation
+	for rows.Next() {
+		a := &model.VersionAnnotation{}
+		if err := rows.Scan(&a.ID, &a.BaseVersionID, &a.CompareVersionID, &a.ElementID, &a.Content, &a.Author, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		annotations = append(annotations, a)
+	}
+	return annotations, nil
+}
+
+func (r *PostgresRepo) DeleteVersionAnnotation(id string) error {
+	_, err := r.db.Exec(`DELETE FROM version_annotations WHERE id = $1`, id)
+	return err
+}
+
+func (r *PostgresRepo) GetVersionAnnotationAuthor(id string) (string, error) {
+	row := r.db.QueryRow(`SELECT author FROM version_annotations WHERE id = $1`, id)
+	var author string
+	err := row.Scan(&author)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return author, err
 }

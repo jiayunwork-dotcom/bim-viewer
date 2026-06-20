@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import api from '../utils/api'
+import api, { getCurrentUsername } from '../utils/api'
 
 export const useVersionStore = defineStore('version', () => {
   const versions = ref([])
@@ -13,6 +13,21 @@ export const useVersionStore = defineStore('version', () => {
   const filterType = ref('all')
   const selectedElementId = ref(null)
   const elementPropertyCache = ref({})
+  const annotations = ref([])
+  const annotationsLoading = ref(false)
+  const annotationsByElement = computed(() => {
+    const map = {}
+    for (const a of annotations.value) {
+      if (!map[a.elementId]) {
+        map[a.elementId] = []
+      }
+      map[a.elementId].push(a)
+    }
+    return map
+  })
+  const annotatedElementIds = computed(() => {
+    return new Set(annotations.value.map(a => a.elementId))
+  })
 
   const DIFF_TYPES = {
     ADDED: 'added',
@@ -191,11 +206,86 @@ export const useVersionStore = defineStore('version', () => {
     filterType.value = 'all'
     selectedElementId.value = null
     elementPropertyCache.value = {}
+    annotations.value = []
   }
 
   function clearStore() {
     exitCompareMode()
     versions.value = []
+  }
+
+  async function fetchAnnotations() {
+    if (!currentBaseVersion.value || !currentCompareVersion.value) return []
+    annotationsLoading.value = true
+    try {
+      const res = await api.get('/version-annotations', {
+        params: {
+          baseVersionId: currentBaseVersion.value.id,
+          compareVersionId: currentCompareVersion.value.id
+        }
+      })
+      annotations.value = res.data
+      return res.data
+    } catch (err) {
+      console.error('Failed to fetch annotations:', err)
+      throw err
+    } finally {
+      annotationsLoading.value = false
+    }
+  }
+
+  async function createAnnotation(elementId, content) {
+    const trimmed = content.trim()
+    if (!trimmed) {
+      throw new Error('批注内容不能为空')
+    }
+    if (trimmed.length > 500) {
+      throw new Error('批注内容不能超过500字符')
+    }
+    if (!currentBaseVersion.value || !currentCompareVersion.value) {
+      throw new Error('请先进行版本对比')
+    }
+    const author = getCurrentUsername() || 'anonymous'
+    try {
+      const res = await api.post('/version-annotations', {
+        baseVersionId: currentBaseVersion.value.id,
+        compareVersionId: currentCompareVersion.value.id,
+        elementId,
+        content: trimmed,
+        author
+      })
+      annotations.value.unshift(res.data)
+      return res.data
+    } catch (err) {
+      console.error('Failed to create annotation:', err)
+      throw err
+    }
+  }
+
+  async function deleteAnnotation(annotationId) {
+    try {
+      await api.delete(`/version-annotations/${annotationId}`)
+      annotations.value = annotations.value.filter(a => a.id !== annotationId)
+    } catch (err) {
+      console.error('Failed to delete annotation:', err)
+      throw err
+    }
+  }
+
+  async function generateCompareReport(modelId) {
+    if (!currentBaseVersion.value || !currentCompareVersion.value) {
+      throw new Error('请先进行版本对比')
+    }
+    try {
+      const res = await api.post(`/models/${modelId}/versions/report`, {
+        baseVersionId: currentBaseVersion.value.id,
+        compareVersionId: currentCompareVersion.value.id
+      })
+      return res.data
+    } catch (err) {
+      console.error('Failed to generate report:', err)
+      throw err
+    }
   }
 
   return {
@@ -209,6 +299,10 @@ export const useVersionStore = defineStore('version', () => {
     filterType,
     selectedElementId,
     elementPropertyCache,
+    annotations,
+    annotationsLoading,
+    annotationsByElement,
+    annotatedElementIds,
     DIFF_TYPES,
     DIFF_COLORS,
     DIFF_COLORS_CSS,
@@ -225,6 +319,10 @@ export const useVersionStore = defineStore('version', () => {
     setFilterType,
     selectElement,
     exitCompareMode,
-    clearStore
+    clearStore,
+    fetchAnnotations,
+    createAnnotation,
+    deleteAnnotation,
+    generateCompareReport
   }
 })

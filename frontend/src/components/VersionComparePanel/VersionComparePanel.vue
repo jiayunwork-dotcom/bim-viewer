@@ -211,6 +211,9 @@
               :style="{ background: versionStore.DIFF_COLORS_CSS[versionStore.getElementDiffType(elementId)] }"
             />
             <span class="element-name">{{ getElementName(elementId) }}</span>
+            <span v-if="versionStore.annotatedElementIds.has(elementId)" class="annotation-badge" title="有批注">
+              <el-icon><ChatDotRound /></el-icon>
+            </span>
             <el-tag
               size="small"
               :type="getDiffTagType(versionStore.getElementDiffType(elementId))"
@@ -222,6 +225,67 @@
             暂无该类型的差异构件
           </div>
         </div>
+      </div>
+
+      <div class="annotations-section">
+        <el-collapse v-model="annotationCollapse">
+          <el-collapse-item name="annotations">
+            <template #title>
+              <div class="annotation-collapse-title">
+                <span>批注列表</span>
+                <el-tag size="small" type="warning">{{ versionStore.annotations.length }}</el-tag>
+              </div>
+            </template>
+            <div class="annotation-list" v-loading="versionStore.annotationsLoading">
+              <div
+                v-for="ann in versionStore.annotations"
+                :key="ann.id"
+                class="annotation-item"
+              >
+                <div class="annotation-item-header">
+                  <span
+                    class="diff-type-dot"
+                    :style="{ background: versionStore.DIFF_COLORS_CSS[versionStore.getElementDiffType(ann.elementId)] }"
+                  />
+                  <span class="annotation-element-name" @click="handleAnnotationJump(ann.elementId)">
+                    {{ getElementName(ann.elementId) }}
+                  </span>
+                  <el-button
+                    v-if="canDeleteAnnotation(ann)"
+                    class="annotation-delete-btn"
+                    size="small"
+                    type="danger"
+                    text
+                    @click.stop="handleDeleteAnnotation(ann.id)"
+                  >
+                    删除
+                  </el-button>
+                </div>
+                <div class="annotation-content">{{ ann.content }}</div>
+                <div class="annotation-meta">
+                  <span class="annotation-author">{{ ann.author }}</span>
+                  <span class="annotation-time">{{ formatDate(ann.createdAt) }}</span>
+                </div>
+              </div>
+              <div v-if="versionStore.annotations.length === 0" class="empty-list">
+                暂无批注
+              </div>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+      </div>
+
+      <div class="export-section">
+        <el-button
+          type="primary"
+          size="small"
+          style="width: 100%"
+          :loading="exportingReport"
+          @click="handleExportReport"
+        >
+          <el-icon style="margin-right: 4px"><Download /></el-icon>
+          导出对比报告
+        </el-button>
       </div>
     </div>
 
@@ -276,6 +340,58 @@
             </div>
           </div>
         </div>
+
+        <div class="annotation-section">
+          <div class="annotation-section-title">
+            <el-icon><ChatDotRound /></el-icon>
+            <span>变更批注</span>
+          </div>
+
+          <div v-if="elementAnnotations.length > 0" class="existing-annotations">
+            <div
+              v-for="ann in elementAnnotations"
+              :key="ann.id"
+              class="existing-annotation-item"
+            >
+              <div class="existing-annotation-header">
+                <span class="existing-annotation-author">{{ ann.author }}</span>
+                <span class="existing-annotation-time">{{ formatDate(ann.createdAt) }}</span>
+                <el-button
+                  v-if="canDeleteAnnotation(ann)"
+                  size="small"
+                  type="danger"
+                  text
+                  @click="handleDeleteAnnotation(ann.id)"
+                >
+                  删除
+                </el-button>
+              </div>
+              <div class="existing-annotation-content">{{ ann.content }}</div>
+            </div>
+          </div>
+
+          <div class="annotation-input-area">
+            <el-input
+              v-model="newAnnotationContent"
+              type="textarea"
+              :rows="3"
+              placeholder="输入批注内容（最大500字符）..."
+              maxlength="500"
+              show-word-limit
+              resize="none"
+            />
+            <el-button
+              type="primary"
+              size="small"
+              style="margin-top: 8px"
+              :loading="submittingAnnotation"
+              :disabled="!newAnnotationContent.trim() || newAnnotationContent.trim().length > 500"
+              @click="handleSubmitAnnotation"
+            >
+              提交批注
+            </el-button>
+          </div>
+        </div>
       </div>
     </el-drawer>
   </div>
@@ -286,7 +402,8 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useVersionStore } from '../../stores/version'
 import { useModelStore } from '../../stores/model'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Loading } from '@element-plus/icons-vue'
+import { ArrowRight, Loading, ChatDotRound, Download } from '@element-plus/icons-vue'
+import { getCurrentUsername } from '../../utils/api'
 
 const props = defineProps({
   renderer: Object,
@@ -304,6 +421,15 @@ const selectedElementForCompare = ref(null)
 const loadingProperties = ref(false)
 const baseElementProperties = ref(null)
 const compareElementProperties = ref(null)
+const newAnnotationContent = ref('')
+const submittingAnnotation = ref(false)
+const exportingReport = ref(false)
+const annotationCollapse = ref([])
+
+const elementAnnotations = computed(() => {
+  if (!selectedElementForCompare.value) return []
+  return versionStore.annotationsByElement.value[selectedElementForCompare.value] || []
+})
 
 const canCompare = computed(() => {
   return baseVersionId.value && compareVersionId.value && baseVersionId.value !== compareVersionId.value
@@ -409,6 +535,15 @@ async function handleCompare() {
     
     const diffCount = result.diff.added.length + result.diff.removed.length + result.diff.modified.length
     ElMessage.success(`对比完成，发现 ${diffCount} 处变更`)
+
+    try {
+      await versionStore.fetchAnnotations()
+      if (props.renderer) {
+        props.renderer.updateVersionAnnotationPins(Array.from(versionStore.annotatedElementIds))
+      }
+    } catch (e) {
+      console.warn('加载批注失败:', e)
+    }
   } catch (err) {
     ElMessage.error('对比失败: ' + err.message)
   }
@@ -472,6 +607,7 @@ async function handleElementClick(elementId) {
   versionStore.selectElement(elementId)
   selectedElementForCompare.value = elementId
   propertyCompareVisible.value = true
+  newAnnotationContent.value = ''
   
   if (props.renderer) {
     const color = versionStore.getElementDiffColor(elementId)
@@ -527,6 +663,109 @@ function formatDate(dateStr) {
     return String(dateStr)
   }
   return `${date.getFullYear()}-${padZero(date.getMonth() + 1)}-${padZero(date.getDate())} ${padZero(date.getHours())}:${padZero(date.getMinutes())}`
+}
+
+function canDeleteAnnotation(annotation) {
+  const currentUser = getCurrentUsername()
+  if (!currentUser) return false
+  return annotation.author === currentUser || annotation.author === 'anonymous'
+}
+
+async function handleSubmitAnnotation() {
+  const content = newAnnotationContent.value.trim()
+  if (!content) {
+    ElMessage.warning('批注内容不能为空')
+    return
+  }
+  if (content.length > 500) {
+    ElMessage.warning('批注内容不能超过500字符')
+    return
+  }
+  if (!selectedElementForCompare.value) {
+    ElMessage.warning('请先选择构件')
+    return
+  }
+
+  submittingAnnotation.value = true
+  try {
+    await versionStore.createAnnotation(selectedElementForCompare.value, content)
+    ElMessage.success('批注添加成功')
+    newAnnotationContent.value = ''
+    if (props.renderer) {
+      props.renderer.updateVersionAnnotationPins(Array.from(versionStore.annotatedElementIds))
+    }
+  } catch (err) {
+    ElMessage.error('添加批注失败: ' + (err.response?.data?.error || err.message))
+  } finally {
+    submittingAnnotation.value = false
+  }
+}
+
+async function handleDeleteAnnotation(annotationId) {
+  try {
+    await ElMessageBox.confirm('确定要删除这条批注吗？', '删除批注', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+
+  try {
+    await versionStore.deleteAnnotation(annotationId)
+    ElMessage.success('批注已删除')
+    if (props.renderer) {
+      props.renderer.updateVersionAnnotationPins(Array.from(versionStore.annotatedElementIds))
+    }
+  } catch (err) {
+    ElMessage.error('删除批注失败: ' + (err.response?.data?.error || err.message))
+  }
+}
+
+function handleAnnotationJump(elementId) {
+  versionStore.selectElement(elementId)
+  if (props.renderer) {
+    props.renderer.focusOnElement(elementId)
+    const color = versionStore.getElementDiffColor(elementId)
+    if (color) {
+      props.renderer.highlightElement(elementId, color)
+    }
+  }
+}
+
+async function handleExportReport() {
+  if (!versionStore.currentBaseVersion || !versionStore.currentCompareVersion) {
+    ElMessage.warning('请先进行版本对比')
+    return
+  }
+
+  exportingReport.value = true
+  try {
+    const report = await versionStore.generateCompareReport(props.modelId)
+
+    const modelName = report.metaInfo?.modelName || 'model'
+    const baseVer = report.metaInfo?.baseVersion || 'v1'
+    const compareVer = report.metaInfo?.compareVersion || 'v2'
+    const fileName = `${modelName}_${baseVer}-vs-${compareVer}_对比报告.json`
+
+    const formattedJson = JSON.stringify(report, null, 2)
+    const blob = new Blob([formattedJson], { type: 'application/json;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+
+    ElMessage.success('报告导出成功')
+  } catch (err) {
+    ElMessage.error('导出报告失败: ' + (err.response?.data?.error || err.message))
+  } finally {
+    exportingReport.value = false
+  }
 }
 </script>
 
@@ -935,5 +1174,178 @@ function formatDate(dateStr) {
 :deep(.el-drawer__header) {
   margin-bottom: 0;
   border-bottom: 1px solid #e4e7ed;
+}
+
+.annotation-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ff9800;
+  font-size: 14px;
+}
+
+.annotations-section {
+  padding: 0 12px 8px;
+  border-top: 1px solid #2a2a4a;
+}
+
+.annotation-collapse-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8899aa;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.annotation-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.annotation-item {
+  padding: 10px;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.annotation-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.annotation-element-name {
+  flex: 1;
+  color: #ccddee;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-element-name:hover {
+  color: #409eff;
+}
+
+.annotation-delete-btn {
+  margin-left: auto;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.annotation-content {
+  color: #aabbcc;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  margin-bottom: 4px;
+}
+
+.annotation-meta {
+  display: flex;
+  gap: 10px;
+  color: #8899aa;
+  font-size: 11px;
+}
+
+.export-section {
+  padding: 12px;
+  border-top: 1px solid #2a2a4a;
+}
+
+:deep(.el-collapse) {
+  border: none;
+  background: transparent;
+}
+
+:deep(.el-collapse-item__header) {
+  background: transparent;
+  border-bottom: none;
+  color: #8899aa;
+  font-size: 12px;
+  padding-left: 0;
+  padding-right: 0;
+  height: 36px;
+  line-height: 36px;
+}
+
+:deep(.el-collapse-item__wrap) {
+  background: transparent;
+  border-bottom: none;
+}
+
+:deep(.el-collapse-item__content) {
+  padding: 0;
+}
+
+.annotation-section {
+  padding: 16px;
+  border-top: 1px solid #e4e7ed;
+  background: #fafafa;
+}
+
+.annotation-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 12px;
+}
+
+.annotation-section-title .el-icon {
+  color: #ff9800;
+}
+
+.existing-annotations {
+  margin-bottom: 16px;
+}
+
+.existing-annotation-item {
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+.existing-annotation-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.existing-annotation-author {
+  font-weight: 600;
+  font-size: 13px;
+  color: #303133;
+}
+
+.existing-annotation-time {
+  font-size: 12px;
+  color: #909399;
+  flex: 1;
+}
+
+.existing-annotation-content {
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.annotation-input-area {
+  background: #fff;
+  padding: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
 }
 </style>
