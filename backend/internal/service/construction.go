@@ -23,16 +23,28 @@ func (s *ConstructionService) CreatePlan(req *model.CreateConstructionPlanReques
 	if req.StartDate == "" || req.EndDate == "" {
 		return nil, fmt.Errorf("startDate and endDate are required")
 	}
-	if req.StartDate > req.EndDate {
+
+	startDate, err := model.ParseDateOnly(req.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid startDate: %w", err)
+	}
+	endDate, err := model.ParseDateOnly(req.EndDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid endDate: %w", err)
+	}
+	if startDate.After(endDate.Time) {
 		return nil, fmt.Errorf("startDate must be before endDate")
 	}
 
+	now := time.Now().UTC()
 	p := &model.ConstructionPlan{
 		ID:        generateConstructionUUID(),
 		ModelID:   req.ModelID,
 		Name:      req.Name,
-		StartDate: req.StartDate,
-		EndDate:   req.EndDate,
+		StartDate: startDate,
+		EndDate:   endDate,
+		CreatedAt: now,
+		UpdatedAt: now,
 		Phases:    []model.ConstructionPhase{},
 	}
 
@@ -64,12 +76,20 @@ func (s *ConstructionService) UpdatePlan(id string, req *model.UpdateConstructio
 		newStart := existing.StartDate
 		newEnd := existing.EndDate
 		if req.StartDate != nil {
-			newStart = *req.StartDate
+			d, err := model.ParseDateOnly(*req.StartDate)
+			if err != nil {
+				return nil, fmt.Errorf("invalid startDate: %w", err)
+			}
+			newStart = d
 		}
 		if req.EndDate != nil {
-			newEnd = *req.EndDate
+			d, err := model.ParseDateOnly(*req.EndDate)
+			if err != nil {
+				return nil, fmt.Errorf("invalid endDate: %w", err)
+			}
+			newEnd = d
 		}
-		if newStart > newEnd {
+		if newStart.After(newEnd.Time) {
 			return nil, fmt.Errorf("startDate must be before endDate")
 		}
 	}
@@ -100,17 +120,26 @@ func (s *ConstructionService) CreatePhase(planID string, req *model.CreateConstr
 	if req.StartDate == "" || req.EndDate == "" {
 		return nil, fmt.Errorf("phase startDate and endDate are required")
 	}
-	if req.StartDate > req.EndDate {
+
+	startDate, err := model.ParseDateOnly(req.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid startDate: %w", err)
+	}
+	endDate, err := model.ParseDateOnly(req.EndDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid endDate: %w", err)
+	}
+	if startDate.After(endDate.Time) {
 		return nil, fmt.Errorf("phase startDate must be before endDate")
 	}
-	if req.StartDate < plan.StartDate {
-		return nil, fmt.Errorf("phase startDate must not be earlier than plan startDate")
+	if startDate.Before(plan.StartDate.Time) && !startDate.Equal(plan.StartDate.Time) {
+		return nil, fmt.Errorf("phase startDate must not be earlier than plan startDate (%s)", plan.StartDate.String())
 	}
-	if req.EndDate > plan.EndDate {
-		return nil, fmt.Errorf("phase endDate must not be later than plan endDate")
+	if endDate.After(plan.EndDate.Time) && !endDate.Equal(plan.EndDate.Time) {
+		return nil, fmt.Errorf("phase endDate must not be later than plan endDate (%s)", plan.EndDate.String())
 	}
 
-	if err := s.validatePhaseOverlap(planID, "", req.StartDate, req.EndDate); err != nil {
+	if err := s.validatePhaseOverlap(planID, "", startDate, endDate); err != nil {
 		return nil, err
 	}
 
@@ -126,16 +155,19 @@ func (s *ConstructionService) CreatePhase(planID string, req *model.CreateConstr
 	}
 
 	color := s.assignPhaseColor(len(plan.Phases))
+	now := time.Now().UTC()
 
 	ph := &model.ConstructionPhase{
 		ID:         generateConstructionUUID(),
 		PlanID:     planID,
 		Name:       req.Name,
-		StartDate:  req.StartDate,
-		EndDate:    req.EndDate,
+		StartDate:  startDate,
+		EndDate:    endDate,
 		ElementIDs: req.ElementIDs,
 		Color:      color,
 		SortOrder:  maxOrder + 1,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	if ph.ElementIDs == nil {
 		ph.ElementIDs = []string{}
@@ -161,12 +193,20 @@ func (s *ConstructionService) UpdatePhase(phaseID string, req *model.UpdateConst
 		newStart := existing.StartDate
 		newEnd := existing.EndDate
 		if req.StartDate != nil {
-			newStart = *req.StartDate
+			d, err := model.ParseDateOnly(*req.StartDate)
+			if err != nil {
+				return nil, fmt.Errorf("invalid startDate: %w", err)
+			}
+			newStart = d
 		}
 		if req.EndDate != nil {
-			newEnd = *req.EndDate
+			d, err := model.ParseDateOnly(*req.EndDate)
+			if err != nil {
+				return nil, fmt.Errorf("invalid endDate: %w", err)
+			}
+			newEnd = d
 		}
-		if newStart > newEnd {
+		if newStart.After(newEnd.Time) {
 			return nil, fmt.Errorf("phase startDate must be before endDate")
 		}
 
@@ -175,11 +215,11 @@ func (s *ConstructionService) UpdatePhase(phaseID string, req *model.UpdateConst
 			return nil, err
 		}
 		if plan != nil {
-			if newStart < plan.StartDate {
-				return nil, fmt.Errorf("phase startDate must not be earlier than plan startDate")
+			if newStart.Before(plan.StartDate.Time) && !newStart.Equal(plan.StartDate.Time) {
+				return nil, fmt.Errorf("phase startDate must not be earlier than plan startDate (%s)", plan.StartDate.String())
 			}
-			if newEnd > plan.EndDate {
-				return nil, fmt.Errorf("phase endDate must not be later than plan endDate")
+			if newEnd.After(plan.EndDate.Time) && !newEnd.Equal(plan.EndDate.Time) {
+				return nil, fmt.Errorf("phase endDate must not be later than plan endDate (%s)", plan.EndDate.String())
 			}
 		}
 
@@ -209,7 +249,7 @@ func (s *ConstructionService) GetPhasesByPlan(planID string) ([]model.Constructi
 	return s.repo.GetConstructionPhasesByPlan(planID)
 }
 
-func (s *ConstructionService) validatePhaseOverlap(planID, excludePhaseID, startDate, endDate string) error {
+func (s *ConstructionService) validatePhaseOverlap(planID, excludePhaseID string, startDate, endDate model.DateOnly) error {
 	phases, err := s.repo.GetConstructionPhasesByPlan(planID)
 	if err != nil {
 		return err
@@ -219,8 +259,10 @@ func (s *ConstructionService) validatePhaseOverlap(planID, excludePhaseID, start
 		if ph.ID == excludePhaseID {
 			continue
 		}
-		if startDate < ph.EndDate && endDate > ph.StartDate {
-			return fmt.Errorf("phase time range overlaps with phase '%s' (%s ~ %s)", ph.Name, ph.StartDate, ph.EndDate)
+		overlap := startDate.Before(ph.EndDate.Time) && endDate.After(ph.StartDate.Time) &&
+			!startDate.Equal(ph.EndDate.Time) && !endDate.Equal(ph.StartDate.Time)
+		if overlap {
+			return fmt.Errorf("phase time range overlaps with phase '%s' (%s ~ %s)", ph.Name, ph.StartDate.String(), ph.EndDate.String())
 		}
 	}
 	return nil

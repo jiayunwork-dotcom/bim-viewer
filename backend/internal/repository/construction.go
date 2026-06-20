@@ -44,8 +44,8 @@ func (r *PostgresRepo) MigrateConstruction() error {
 func (r *PostgresRepo) CreateConstructionPlan(p *model.ConstructionPlan) error {
 	_, err := r.db.Exec(
 		`INSERT INTO construction_plans (id, model_id, name, start_date, end_date, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
-		p.ID, p.ModelID, p.Name, p.StartDate, p.EndDate,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		p.ID, p.ModelID, p.Name, p.StartDate, p.EndDate, p.CreatedAt, p.UpdatedAt,
 	)
 	return err
 }
@@ -61,7 +61,7 @@ func (r *PostgresRepo) GetConstructionPlan(id string) (*model.ConstructionPlan, 
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GetConstructionPlan scan error: %w", err)
 	}
 	phases, err := r.GetConstructionPhasesByPlan(id)
 	if err != nil {
@@ -103,12 +103,20 @@ func (r *PostgresRepo) UpdateConstructionPlan(id string, req *model.UpdateConstr
 	}
 	if req.StartDate != nil {
 		sets = append(sets, fmt.Sprintf("start_date = $%d", argIdx))
-		args = append(args, *req.StartDate)
+		d, err := model.ParseDateOnly(*req.StartDate)
+		if err != nil {
+			return fmt.Errorf("invalid startDate: %w", err)
+		}
+		args = append(args, d)
 		argIdx++
 	}
 	if req.EndDate != nil {
 		sets = append(sets, fmt.Sprintf("end_date = $%d", argIdx))
-		args = append(args, *req.EndDate)
+		d, err := model.ParseDateOnly(*req.EndDate)
+		if err != nil {
+			return fmt.Errorf("invalid endDate: %w", err)
+		}
+		args = append(args, d)
 		argIdx++
 	}
 
@@ -133,8 +141,8 @@ func (r *PostgresRepo) CreateConstructionPhase(ph *model.ConstructionPhase) erro
 	elemIDsJSON, _ := json.Marshal(ph.ElementIDs)
 	_, err := r.db.Exec(
 		`INSERT INTO construction_phases (id, plan_id, name, start_date, end_date, element_ids, color, sort_order, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())`,
-		ph.ID, ph.PlanID, ph.Name, ph.StartDate, ph.EndDate, elemIDsJSON, ph.Color, ph.SortOrder,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		ph.ID, ph.PlanID, ph.Name, ph.StartDate, ph.EndDate, elemIDsJSON, ph.Color, ph.SortOrder, ph.CreatedAt, ph.UpdatedAt,
 	)
 	return err
 }
@@ -179,12 +187,20 @@ func (r *PostgresRepo) UpdateConstructionPhase(id string, req *model.UpdateConst
 	}
 	if req.StartDate != nil {
 		sets = append(sets, fmt.Sprintf("start_date = $%d", argIdx))
-		args = append(args, *req.StartDate)
+		d, err := model.ParseDateOnly(*req.StartDate)
+		if err != nil {
+			return fmt.Errorf("invalid startDate: %w", err)
+		}
+		args = append(args, d)
 		argIdx++
 	}
 	if req.EndDate != nil {
 		sets = append(sets, fmt.Sprintf("end_date = $%d", argIdx))
-		args = append(args, *req.EndDate)
+		d, err := model.ParseDateOnly(*req.EndDate)
+		if err != nil {
+			return fmt.Errorf("invalid endDate: %w", err)
+		}
+		args = append(args, d)
 		argIdx++
 	}
 	if req.ElementIDs != nil {

@@ -2,7 +2,7 @@
   <div class="construction-panel">
     <div class="panel-header">
       <span class="panel-title">施工4D模拟</span>
-      <el-button size="small" type="primary" @click="showCreatePlan = true" v-if="!constructionStore.currentPlan">
+      <el-button size="small" type="primary" @click="showCreatePlan = true" v-if="!constructionStore.currentPlan" :disabled="!canCreatePlan">
         新建计划
       </el-button>
       <el-button size="small" @click="backToList" v-if="constructionStore.currentPlan">
@@ -223,17 +223,25 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useConstructionStore } from '../../stores/construction'
 import { useModelStore } from '../../stores/model'
 import { Delete, Edit, Pointer, ArrowRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({
-  modelId: { type: String, required: true }
+  modelId: { type: String, required: false, default: '' }
 })
 
+const route = useRoute()
 const constructionStore = useConstructionStore()
 const modelStore = useModelStore()
+
+const resolvedModelId = computed(() => {
+  return props.modelId || route.params.modelId || ''
+})
+
+const canCreatePlan = computed(() => !!resolvedModelId.value)
 
 const showCreatePlan = ref(false)
 const showEditPlan = ref(false)
@@ -252,12 +260,12 @@ const elementFilter = ref('')
 const expandedCategories = reactive({})
 
 onMounted(() => {
-  if (props.modelId) {
-    constructionStore.fetchPlans(props.modelId)
+  if (resolvedModelId.value) {
+    constructionStore.fetchPlans(resolvedModelId.value)
   }
 })
 
-watch(() => props.modelId, (val) => {
+watch(resolvedModelId, (val) => {
   if (val) constructionStore.fetchPlans(val)
 })
 
@@ -268,7 +276,7 @@ function selectPlan(plan) {
 function backToList() {
   constructionStore.stopPlayback()
   constructionStore.setCurrentPlan(null)
-  constructionStore.fetchPlans(props.modelId)
+  constructionStore.fetchPlans(resolvedModelId.value)
 }
 
 async function handleCreatePlan() {
@@ -276,10 +284,14 @@ async function handleCreatePlan() {
     ElMessage.warning('请填写完整信息')
     return
   }
+  if (!resolvedModelId.value) {
+    ElMessage.error('模型ID不存在，请刷新页面重试')
+    return
+  }
   saving.value = true
   try {
     const plan = await constructionStore.createPlan({
-      modelId: props.modelId,
+      modelId: resolvedModelId.value,
       name: newPlan.name,
       startDate: newPlan.startDate,
       endDate: newPlan.endDate
