@@ -29,6 +29,9 @@ func main() {
 	if err := repo.MigrateAnnotations(); err != nil {
 		log.Fatalf("Failed to run annotation migrations: %v", err)
 	}
+	if err := repo.MigrateConstruction(); err != nil {
+		log.Fatalf("Failed to run construction migrations: %v", err)
+	}
 
 	ifcParser := service.NewIFCParserService()
 	collisionSvc := service.NewCollisionService()
@@ -38,10 +41,12 @@ func main() {
 	go wsHub.Run()
 
 	annotationSvc := service.NewAnnotationService(repo, wsHub)
+	constructionSvc := service.NewConstructionService(repo)
 
 	modelHandler := handler.NewModelHandler(modelSvc)
 	collisionHandler := handler.NewCollisionHandler(collisionSvc, modelSvc)
 	annotationHandler := handler.NewAnnotationHandler(annotationSvc, wsHub)
+	constructionHandler := handler.NewConstructionHandler(constructionSvc)
 
 	r := mux.NewRouter()
 	api := r.PathPrefix("/api/v1").Subrouter()
@@ -85,6 +90,17 @@ func main() {
 	api.HandleFunc("/issues/{id}", annotationHandler.GetIssue).Methods("GET", "OPTIONS")
 	api.HandleFunc("/issues/{id}", annotationHandler.UpdateIssue).Methods("PUT", "OPTIONS")
 	api.HandleFunc("/issues/{id}/archive", annotationHandler.ArchiveIssue).Methods("POST", "OPTIONS")
+
+	api.HandleFunc("/construction/plans", constructionHandler.CreatePlan).Methods("POST", "OPTIONS")
+	api.HandleFunc("/construction/plans", constructionHandler.ListPlans).Methods("GET", "OPTIONS")
+	api.HandleFunc("/construction/plans/{id}", constructionHandler.GetPlan).Methods("GET", "OPTIONS")
+	api.HandleFunc("/construction/plans/{id}", constructionHandler.UpdatePlan).Methods("PUT", "OPTIONS")
+	api.HandleFunc("/construction/plans/{id}", constructionHandler.DeletePlan).Methods("DELETE", "OPTIONS")
+	api.HandleFunc("/construction/plans/{planId}/phases", constructionHandler.CreatePhase).Methods("POST", "OPTIONS")
+	api.HandleFunc("/construction/plans/{planId}/phases", constructionHandler.ListPhases).Methods("GET", "OPTIONS")
+	api.HandleFunc("/construction/plans/{planId}/phases/{phaseId}", constructionHandler.GetPhase).Methods("GET", "OPTIONS")
+	api.HandleFunc("/construction/plans/{planId}/phases/{phaseId}", constructionHandler.UpdatePhase).Methods("PUT", "OPTIONS")
+	api.HandleFunc("/construction/plans/{planId}/phases/{phaseId}", constructionHandler.DeletePhase).Methods("DELETE", "OPTIONS")
 
 	r.HandleFunc("/ws/annotations", annotationHandler.HandleWebSocket)
 

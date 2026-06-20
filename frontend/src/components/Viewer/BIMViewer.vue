@@ -90,6 +90,10 @@
       <div class="right-panel annotation-right-panel" v-show="viewerStore.activePanel === 'annotation'">
         <AnnotationPanel :renderer="renderer" :model-id="modelStore.currentModel?.id" @pin-click="handleAnnotationPinClick" />
       </div>
+
+      <div class="right-panel construction-right-panel" v-show="viewerStore.activePanel === 'construction'">
+        <ConstructionPlanPanel :model-id="modelStore.currentModel?.id" />
+      </div>
     </div>
 
     <div class="bottom-panel" v-show="viewerStore.activePanel === 'collision'">
@@ -135,6 +139,16 @@
           @click="viewerStore.setActivePanel('annotation')"
         >
           <el-icon><Location /></el-icon>
+        </el-button>
+      </el-tooltip>
+      <el-tooltip content="施工4D" placement="left">
+        <el-button
+          :type="viewerStore.activePanel === 'construction' ? 'primary' : 'default'"
+          size="small"
+          circle
+          @click="viewerStore.setActivePanel('construction')"
+        >
+          <el-icon><Timer /></el-icon>
         </el-button>
       </el-tooltip>
     </div>
@@ -187,11 +201,13 @@
       </div>
       <el-button size="small" @click="takeScreenshot" style="margin-top: 8px">截图导出</el-button>
     </div>
+
+    <TimelinePlayer />
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { useModelStore } from '../../stores/model'
 import { useViewerStore } from '../../stores/viewer'
@@ -199,11 +215,14 @@ import { useClipStore } from '../../stores/clip'
 import { useMeasureStore } from '../../stores/measure'
 import { useCollisionStore } from '../../stores/collision'
 import { useAnnotationStore } from '../../stores/annotation'
+import { useConstructionStore } from '../../stores/construction'
 import { BIMRenderer } from '../../utils/BIMRenderer'
 import TreePanel from '../TreePanel/TreePanel.vue'
 import PropertyPanel from '../PropertyPanel/PropertyPanel.vue'
 import CollisionPanel from '../CollisionPanel/CollisionPanel.vue'
 import AnnotationPanel from '../AnnotationPanel/AnnotationPanel.vue'
+import ConstructionPlanPanel from '../ConstructionPanel/ConstructionPlanPanel.vue'
+import TimelinePlayer from '../ConstructionPanel/TimelinePlayer.vue'
 import ContextMenu from '../ContextMenu/ContextMenu.vue'
 import * as THREE from 'three'
 import { ElMessage } from 'element-plus'
@@ -214,6 +233,7 @@ const viewerStore = useViewerStore()
 const clipStore = useClipStore()
 const measureStore = useMeasureStore()
 const annotationStore = useAnnotationStore()
+const constructionStore = useConstructionStore()
 
 const viewerContainer = ref(null)
 const canvasContainer = ref(null)
@@ -376,6 +396,11 @@ function createElementGeometry(element) {
 }
 
 function handleElementClick(elementId, shiftKey, contextMenuPos) {
+  if (constructionStore.playbackActive) {
+    const opacity = constructionStore.getElementOpacity(elementId, constructionStore.currentDate)
+    if (opacity <= 0) return
+  }
+
   if (contextMenuPos) {
     viewerStore.showContextMenu(contextMenuPos.x, contextMenuPos.y, elementId)
     return
@@ -498,6 +523,57 @@ function handleAnnotationPinClick(annotation) {
     )
   }
 }
+
+watch(() => constructionStore.playbackActive, (active) => {
+  if (!renderer.value) return
+  if (active) {
+    updateConstructionOpacity()
+  } else {
+    restoreAllOpacity()
+  }
+})
+
+watch(() => constructionStore.currentDate, () => {
+  if (constructionStore.playbackActive) {
+    updateConstructionOpacity()
+  }
+})
+
+watch(() => constructionStore.playProgress, () => {
+  if (constructionStore.playbackActive) {
+    updateConstructionOpacity()
+  }
+})
+
+function updateConstructionOpacity() {
+  if (!renderer.value || !constructionStore.currentPlan) return
+  const date = constructionStore.currentDate
+  const phases = constructionStore.allPhases
+  const assignedElements = new Set()
+
+  for (const phase of phases) {
+    for (const eid of phase.elementIds || []) {
+      assignedElements.add(eid)
+    }
+    const opacity = constructionStore.getPhaseOpacity(phase, date)
+    for (const eid of phase.elementIds || []) {
+      renderer.value.setElementOpacity(eid, opacity)
+    }
+  }
+
+  for (const e of modelStore.elements) {
+    if (!assignedElements.has(e.id)) {
+      renderer.value.setElementOpacity(e.id, 0)
+    }
+  }
+}
+
+function restoreAllOpacity() {
+  if (!renderer.value) return
+  for (const e of modelStore.elements) {
+    renderer.value.setElementOpacity(e.id, 1.0)
+  }
+}
 </script>
 
 <style scoped>
@@ -564,6 +640,10 @@ function handleAnnotationPinClick(annotation) {
 }
 
 .annotation-right-panel {
+  width: 400px;
+}
+
+.construction-right-panel {
   width: 400px;
 }
 
