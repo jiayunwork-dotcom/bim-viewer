@@ -63,6 +63,24 @@
             <div class="phase-name">{{ phase.name }}</div>
             <div class="phase-dates">{{ phase.startDate }} ~ {{ phase.endDate }}</div>
             <div class="phase-elements">{{ (phase.elementIds || []).length }} 个构件</div>
+            <div class="phase-predecessors">
+              <el-select
+                v-model="localPredecessors[phase.id]"
+                multiple
+                placeholder="选择前置阶段"
+                size="small"
+                class="predecessor-select"
+                @change="handlePredecessorsChange(phase, $event)"
+                @visible-change="(val) => handlePredecessorDropdownVisible(phase.id, val)"
+              >
+                <el-option
+                  v-for="p in getAvailablePredecessors(phase.id)"
+                  :key="p.id"
+                  :label="p.name"
+                  :value="p.id"
+                />
+              </el-select>
+            </div>
           </div>
           <div class="phase-actions">
             <el-button size="small" circle @click="openEditPhase(phase)">
@@ -81,14 +99,45 @@
       <div class="gantt-section" v-if="constructionStore.allPhases.length > 0">
         <div class="section-header">
           <span>甘特图预览</span>
+          <span v-if="constructionStore.criticalPath" class="critical-path-info">
+            关键路径总工期: <strong>{{ constructionStore.criticalPath.totalDuration }}</strong> 天
+          </span>
         </div>
         <div class="gantt-chart" ref="ganttRef">
+          <svg class="dependency-svg" ref="svgRef">
+            <defs>
+              <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="rgba(128, 128, 128, 0.5)" />
+              </marker>
+              <marker id="arrowhead-highlight" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="#409EFF" />
+              </marker>
+            </defs>
+            <g v-for="arrow in constructionStore.getDependencyArrows()" :key="`${arrow.from}-${arrow.to}`">
+              <line
+                :x1="getArrowFromX(arrow.fromPhase)"
+                :y1="getArrowY(arrow.fromPhase)"
+                :x2="getArrowToX(arrow.toPhase)"
+                :y2="getArrowY(arrow.toPhase)"
+                :stroke="isArrowHighlighted(arrow) ? '#409EFF' : 'rgba(128, 128, 128, 0.5)'"
+                stroke-width="1.5"
+                fill="none"
+                :marker-end="isArrowHighlighted(arrow) ? 'url(#arrowhead-highlight)' : 'url(#arrowhead)'"
+              />
+            </g>
+          </svg>
           <div class="gantt-rows">
             <div v-for="(phase, idx) in constructionStore.allPhases" :key="phase.id" class="gantt-row">
               <div class="gantt-label">{{ phase.name }}</div>
-              <div class="gantt-bar-area" @click="onGanttBarClick(phase)">
+              <div
+                class="gantt-bar-area"
+                @click="onGanttBarClick(phase)"
+                @mouseenter="constructionStore.setHoveredPhaseId(phase.id)"
+                @mouseleave="constructionStore.setHoveredPhaseId(null)"
+              >
                 <div
                   class="gantt-bar"
+                  :class="{ 'critical-path': constructionStore.isPhaseOnCriticalPath(phase.id) }"
                   :style="{
                     left: getBarLeft(phase) + '%',
                     width: getBarWidth(phase) + '%',
@@ -258,6 +307,9 @@ const pickedElementIds = ref(new Set())
 const pickingPhaseId = ref(null)
 const elementFilter = ref('')
 const expandedCategories = reactive({})
+const localPredecessors = reactive({})
+const previousPredecessors = reactive({})
+const svgRef = ref(null)
 
 onMounted(() => {
   if (resolvedModelId.value) {
@@ -268,6 +320,14 @@ onMounted(() => {
 watch(resolvedModelId, (val) => {
   if (val) constructionStore.fetchPlans(val)
 })
+
+watch(() => constructionStore.allPhases, (phases) => {
+  for (const phase of phases) {
+    if (localPredecessors[phase.id] === undefined) {
+      localPredecessors[phase.id] = [...(phase.predecessorIds || [])]
+    }
+  }
+}, { deep: true, immediate: true })
 
 function selectPlan(plan) {
   constructionStore.fetchPlan(plan.id)
@@ -516,6 +576,55 @@ function startPlayback() {
 function stopPlayback() {
   constructionStore.stopPlayback()
 }
+
+function getAvailablePredecessors(currentPhaseId) {
+  return constructionStore.allPhases.filter(p => p.id !== currentPhaseId)
+}
+
+function handlePredecessorDropdownVisible(phaseId, visible) {
+  if (visible) {
+    previousPredecessors[phaseId] = [...(localPredecessors[phaseId] || [])]
+  }
+}
+
+async function handlePredecessorsChange(phase, newPredecessors) {
+  const planId = constructionStore.currentPlan.id
+  try {
+    await constructionStore.updatePhasePredecessors(planId, phase.id, newPredecessors)
+  } catch (err) {
+    ElMessage.error(err.response?.data?.error || '依赖关系设置失败')
+    if (previousPredecessors[phase.id]) {
+      localPredecessors[phase.id] = [...previousPredecessors[phase.id]]
+    }
+  }
+}
+
+function isArrowHighlighted(arrow) {
+  const hoveredId = constructionStore.hoveredPhaseId
+  if (!hoveredId) return false
+  return arrow.from === hoveredId || arrow.to === hoveredId
+}
+
+function getArrowY(phase) {
+  const idx = constructionStore.allPhases.findIndex(p => p.id === phase.id)
+  return idx * 28 + 14
+}
+
+function getArrowFromX(phase) {
+  const labelWidth = 80
+  const barLeft = getBarLeft(phase)
+  const barWidth = getBarWidth(phase)
+  const areaWidth = 100
+  return labelWidth + ((barLeft + barWidth) / areaWidth * (svgRef.value?.clientWidth || 0))
+}
+
+function getArrowToX(phase) {
+  const labelWidth = 80
+  const barLeft = getBarLeft(phase)
+  const areaWidth = 100
+  return labelWidth + (barLeft / areaWidth) * (svgRef.value?.clientWidth || 0)
+}
+
 </script>
 
 <style scoped>
@@ -682,6 +791,24 @@ function stopPlayback() {
   color: #667788;
 }
 
+.phase-predecessors {
+  margin-top: 4px;
+}
+
+.predecessor-select {
+  width: 100%;
+  max-width: 200px;
+}
+
+.predecessor-select :deep(.el-select__tags-text) {
+  font-size: 10px;
+}
+
+.predecessor-select :deep(.el-select__placeholder) {
+  font-size: 10px;
+  color: #667788;
+}
+
 .phase-actions {
   display: flex;
   gap: 2px;
@@ -731,6 +858,37 @@ function stopPlayback() {
 
 .gantt-bar-area:hover .gantt-bar {
   opacity: 1;
+}
+
+.gantt-bar.critical-path {
+  border: 2px solid #f56c6c;
+  top: 3px;
+  height: 22px;
+}
+
+.critical-path-info {
+  font-size: 11px;
+  color: #f56c6c;
+  font-weight: 500;
+}
+
+.critical-path-info strong {
+  font-size: 13px;
+  margin: 0 2px;
+}
+
+.dependency-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.gantt-chart {
+  position: relative;
 }
 
 .element-picker {

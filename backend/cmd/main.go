@@ -101,6 +101,7 @@ func main() {
 	api.HandleFunc("/construction/plans/{planId}/phases/{phaseId}", constructionHandler.GetPhase).Methods("GET", "OPTIONS")
 	api.HandleFunc("/construction/plans/{planId}/phases/{phaseId}", constructionHandler.UpdatePhase).Methods("PUT", "OPTIONS")
 	api.HandleFunc("/construction/plans/{planId}/phases/{phaseId}", constructionHandler.DeletePhase).Methods("DELETE", "OPTIONS")
+	api.HandleFunc("/construction/plans/{planId}/critical-path", constructionHandler.GetCriticalPath).Methods("GET", "OPTIONS")
 
 	r.HandleFunc("/ws/annotations", annotationHandler.HandleWebSocket)
 

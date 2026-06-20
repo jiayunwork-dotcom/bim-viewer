@@ -112,16 +112,23 @@ type ConstructionPlan struct {
 }
 
 type ConstructionPhase struct {
-	ID         string   `json:"id"`
-	PlanID     string   `json:"planId"`
-	Name       string   `json:"name"`
-	StartDate  DateOnly `json:"startDate"`
-	EndDate    DateOnly `json:"endDate"`
-	ElementIDs []string `json:"elementIds"`
-	Color      string   `json:"color,omitempty"`
-	SortOrder  int      `json:"sortOrder"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	ID             string   `json:"id"`
+	PlanID         string   `json:"planId"`
+	Name           string   `json:"name"`
+	StartDate      DateOnly `json:"startDate"`
+	EndDate        DateOnly `json:"endDate"`
+	ElementIDs     []string `json:"elementIds"`
+	Color          string   `json:"color,omitempty"`
+	SortOrder      int      `json:"sortOrder"`
+	PredecessorIDs []string `json:"predecessorIds"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+type CriticalPathResponse struct {
+	PhaseIDs        []string `json:"phaseIds"`
+	TotalDuration   int      `json:"totalDuration"`
+	PhaseDurations  map[string]int `json:"phaseDurations"`
 }
 
 type CreateConstructionPlanRequest struct {
@@ -145,11 +152,12 @@ type CreateConstructionPhaseRequest struct {
 }
 
 type UpdateConstructionPhaseRequest struct {
-	Name       *string  `json:"name,omitempty"`
-	StartDate  *string  `json:"startDate,omitempty"`
-	EndDate    *string  `json:"endDate,omitempty"`
-	ElementIDs []string `json:"elementIds,omitempty"`
-	SortOrder  *int     `json:"sortOrder,omitempty"`
+	Name           *string  `json:"name,omitempty"`
+	StartDate      *string  `json:"startDate,omitempty"`
+	EndDate        *string  `json:"endDate,omitempty"`
+	ElementIDs     []string `json:"elementIds,omitempty"`
+	SortOrder      *int     `json:"sortOrder,omitempty"`
+	PredecessorIDs []string `json:"predecessorIds,omitempty"`
 }
 
 type PhaseOverlapError struct {

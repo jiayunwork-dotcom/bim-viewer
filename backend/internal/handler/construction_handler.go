@@ -190,3 +190,16 @@ func (h *ConstructionHandler) DeletePhase(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
+
+func (h *ConstructionHandler) GetCriticalPath(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	planID := vars["planId"]
+
+	result, err := h.constructionSvc.CalculateCriticalPath(planID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}

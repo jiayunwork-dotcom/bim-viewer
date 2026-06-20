@@ -27,9 +27,16 @@ func (r *PostgresRepo) MigrateConstruction() error {
 			element_ids JSONB DEFAULT '[]',
 			color VARCHAR(16) DEFAULT '#409EFF',
 			sort_order INTEGER DEFAULT 0,
+			predecessor_ids JSONB DEFAULT '[]',
 			created_at TIMESTAMP DEFAULT NOW(),
 			updated_at TIMESTAMP DEFAULT NOW()
 		)`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='construction_phases' AND column_name='predecessor_ids') THEN
+				ALTER TABLE construction_phases ADD COLUMN predecessor_ids JSONB DEFAULT '[]';
+			END IF;
+		END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_construction_plans_model_id ON construction_plans(model_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_construction_phases_plan_id ON construction_phases(plan_id)`,
 	}
@@ -139,17 +146,18 @@ func (r *PostgresRepo) DeleteConstructionPlan(id string) error {
 
 func (r *PostgresRepo) CreateConstructionPhase(ph *model.ConstructionPhase) error {
 	elemIDsJSON, _ := json.Marshal(ph.ElementIDs)
+	predIDsJSON, _ := json.Marshal(ph.PredecessorIDs)
 	_, err := r.db.Exec(
-		`INSERT INTO construction_phases (id, plan_id, name, start_date, end_date, element_ids, color, sort_order, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		ph.ID, ph.PlanID, ph.Name, ph.StartDate, ph.EndDate, elemIDsJSON, ph.Color, ph.SortOrder, ph.CreatedAt, ph.UpdatedAt,
+		`INSERT INTO construction_phases (id, plan_id, name, start_date, end_date, element_ids, color, sort_order, predecessor_ids, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		ph.ID, ph.PlanID, ph.Name, ph.StartDate, ph.EndDate, elemIDsJSON, ph.Color, ph.SortOrder, predIDsJSON, ph.CreatedAt, ph.UpdatedAt,
 	)
 	return err
 }
 
 func (r *PostgresRepo) GetConstructionPhase(id string) (*model.ConstructionPhase, error) {
 	row := r.db.QueryRow(
-		`SELECT id, plan_id, name, start_date, end_date, element_ids, color, sort_order, created_at, updated_at
+		`SELECT id, plan_id, name, start_date, end_date, element_ids, color, sort_order, predecessor_ids, created_at, updated_at
 		 FROM construction_phases WHERE id = $1`, id,
 	)
 	return r.scanPhase(row)
@@ -157,7 +165,7 @@ func (r *PostgresRepo) GetConstructionPhase(id string) (*model.ConstructionPhase
 
 func (r *PostgresRepo) GetConstructionPhasesByPlan(planID string) ([]model.ConstructionPhase, error) {
 	rows, err := r.db.Query(
-		`SELECT id, plan_id, name, start_date, end_date, element_ids, color, sort_order, created_at, updated_at
+		`SELECT id, plan_id, name, start_date, end_date, element_ids, color, sort_order, predecessor_ids, created_at, updated_at
 		 FROM construction_phases WHERE plan_id = $1 ORDER BY sort_order, start_date`, planID,
 	)
 	if err != nil {
@@ -214,6 +222,12 @@ func (r *PostgresRepo) UpdateConstructionPhase(id string, req *model.UpdateConst
 		args = append(args, *req.SortOrder)
 		argIdx++
 	}
+	if req.PredecessorIDs != nil {
+		sets = append(sets, fmt.Sprintf("predecessor_ids = $%d", argIdx))
+		predIDsJSON, _ := json.Marshal(req.PredecessorIDs)
+		args = append(args, predIDsJSON)
+		argIdx++
+	}
 
 	if len(sets) == 0 {
 		return nil
@@ -234,28 +248,36 @@ func (r *PostgresRepo) DeleteConstructionPhase(id string) error {
 
 func (r *PostgresRepo) scanPhase(row *sql.Row) (*model.ConstructionPhase, error) {
 	ph := &model.ConstructionPhase{}
-	var elemIDsStr string
-	err := row.Scan(&ph.ID, &ph.PlanID, &ph.Name, &ph.StartDate, &ph.EndDate, &elemIDsStr, &ph.Color, &ph.SortOrder, &ph.CreatedAt, &ph.UpdatedAt)
+	var elemIDsStr, predIDsStr string
+	err := row.Scan(&ph.ID, &ph.PlanID, &ph.Name, &ph.StartDate, &ph.EndDate, &elemIDsStr, &ph.Color, &ph.SortOrder, &predIDsStr, &ph.CreatedAt, &ph.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal([]byte(elemIDsStr), &ph.ElementIDs)
+	json.Unmarshal([]byte(predIDsStr), &ph.PredecessorIDs)
 	if ph.ElementIDs == nil {
 		ph.ElementIDs = []string{}
+	}
+	if ph.PredecessorIDs == nil {
+		ph.PredecessorIDs = []string{}
 	}
 	return ph, nil
 }
 
 func (r *PostgresRepo) scanPhaseFromRows(rows *sql.Rows) (*model.ConstructionPhase, error) {
 	ph := &model.ConstructionPhase{}
-	var elemIDsStr string
-	err := rows.Scan(&ph.ID, &ph.PlanID, &ph.Name, &ph.StartDate, &ph.EndDate, &elemIDsStr, &ph.Color, &ph.SortOrder, &ph.CreatedAt, &ph.UpdatedAt)
+	var elemIDsStr, predIDsStr string
+	err := rows.Scan(&ph.ID, &ph.PlanID, &ph.Name, &ph.StartDate, &ph.EndDate, &elemIDsStr, &ph.Color, &ph.SortOrder, &predIDsStr, &ph.CreatedAt, &ph.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal([]byte(elemIDsStr), &ph.ElementIDs)
+	json.Unmarshal([]byte(predIDsStr), &ph.PredecessorIDs)
 	if ph.ElementIDs == nil {
 		ph.ElementIDs = []string{}
+	}
+	if ph.PredecessorIDs == nil {
+		ph.PredecessorIDs = []string{}
 	}
 	return ph, nil
 }

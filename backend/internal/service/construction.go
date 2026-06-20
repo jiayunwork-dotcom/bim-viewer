@@ -158,16 +158,17 @@ func (s *ConstructionService) CreatePhase(planID string, req *model.CreateConstr
 	now := time.Now().UTC()
 
 	ph := &model.ConstructionPhase{
-		ID:         generateConstructionUUID(),
-		PlanID:     planID,
-		Name:       req.Name,
-		StartDate:  startDate,
-		EndDate:    endDate,
-		ElementIDs: req.ElementIDs,
-		Color:      color,
-		SortOrder:  maxOrder + 1,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:             generateConstructionUUID(),
+		PlanID:         planID,
+		Name:           req.Name,
+		StartDate:      startDate,
+		EndDate:        endDate,
+		ElementIDs:     req.ElementIDs,
+		Color:          color,
+		SortOrder:      maxOrder + 1,
+		PredecessorIDs: []string{},
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	if ph.ElementIDs == nil {
 		ph.ElementIDs = []string{}
@@ -189,9 +190,10 @@ func (s *ConstructionService) UpdatePhase(phaseID string, req *model.UpdateConst
 		return nil, nil
 	}
 
+	newStart := existing.StartDate
+	newEnd := existing.EndDate
+
 	if req.StartDate != nil || req.EndDate != nil {
-		newStart := existing.StartDate
-		newEnd := existing.EndDate
 		if req.StartDate != nil {
 			d, err := model.ParseDateOnly(*req.StartDate)
 			if err != nil {
@@ -230,6 +232,12 @@ func (s *ConstructionService) UpdatePhase(phaseID string, req *model.UpdateConst
 
 	if req.ElementIDs != nil {
 		if err := s.validateElementUniqueness(existing.PlanID, phaseID, req.ElementIDs); err != nil {
+			return nil, err
+		}
+	}
+
+	if req.PredecessorIDs != nil {
+		if err := s.validatePredecessors(phaseID, existing.PlanID, req.PredecessorIDs, newStart); err != nil {
 			return nil, err
 		}
 	}
@@ -303,6 +311,188 @@ func (s *ConstructionService) assignPhaseColor(index int) string {
 		"#795548", "#607D8B", "#3F51B5", "#009688",
 	}
 	return colors[index%len(colors)]
+}
+
+func (s *ConstructionService) validatePredecessors(phaseID, planID string, predecessorIDs []string, phaseStart model.DateOnly) error {
+	phases, err := s.repo.GetConstructionPhasesByPlan(planID)
+	if err != nil {
+		return fmt.Errorf("failed to get phases: %w", err)
+	}
+
+	phaseMap := make(map[string]*model.ConstructionPhase)
+	for i := range phases {
+		phaseMap[phases[i].ID] = &phases[i]
+	}
+
+	for _, predID := range predecessorIDs {
+		if predID == phaseID {
+			return fmt.Errorf("a phase cannot depend on itself")
+		}
+		pred, exists := phaseMap[predID]
+		if !exists {
+			return fmt.Errorf("predecessor phase '%s' does not exist", predID)
+		}
+		if phaseStart.Before(pred.EndDate.Time) && !phaseStart.Equal(pred.EndDate.Time) {
+			return fmt.Errorf("phase start date (%s) must not be earlier than predecessor '%s' end date (%s)",
+				phaseStart.String(), pred.Name, pred.EndDate.String())
+		}
+	}
+
+	if err := s.validateNoCycle(phaseID, predecessorIDs, phaseMap); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *ConstructionService) validateNoCycle(phaseID string, newPredecessors []string, phaseMap map[string]*model.ConstructionPhase) error {
+	adj := make(map[string][]string)
+	for id, phase := range phaseMap {
+		if id == phaseID {
+			adj[id] = newPredecessors
+		} else {
+			adj[id] = phase.PredecessorIDs
+		}
+	}
+
+	visited := make(map[string]bool)
+	recStack := make(map[string]bool)
+
+	var hasCycle func(string) bool
+	hasCycle = func(id string) bool {
+		if recStack[id] {
+			return true
+		}
+		if visited[id] {
+			return false
+		}
+		visited[id] = true
+		recStack[id] = true
+		for _, pred := range adj[id] {
+			if hasCycle(pred) {
+				return true
+			}
+		}
+		recStack[id] = false
+		return false
+	}
+
+	for id := range phaseMap {
+		if hasCycle(id) {
+			return fmt.Errorf("dependency cycle detected involving phase '%s'", phaseMap[id].Name)
+		}
+	}
+
+	return nil
+}
+
+func (s *ConstructionService) CalculateCriticalPath(planID string) (*model.CriticalPathResponse, error) {
+	phases, err := s.repo.GetConstructionPhasesByPlan(planID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get phases: %w", err)
+	}
+	if len(phases) == 0 {
+		return &model.CriticalPathResponse{
+			PhaseIDs:       []string{},
+			TotalDuration:  0,
+			PhaseDurations: make(map[string]int),
+		}, nil
+	}
+
+	phaseMap := make(map[string]*model.ConstructionPhase)
+	phaseDurations := make(map[string]int)
+	for i := range phases {
+		phaseMap[phases[i].ID] = &phases[i]
+		duration := int(phases[i].EndDate.Time.Sub(phases[i].StartDate.Time).Hours()/24) + 1
+		phaseDurations[phases[i].ID] = duration
+	}
+
+	dist := make(map[string]int)
+	prev := make(map[string]string)
+	for id := range phaseMap {
+		dist[id] = phaseDurations[id]
+		prev[id] = ""
+	}
+
+	topoOrder, err := s.topologicalSort(phaseMap)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, id := range topoOrder {
+		phase := phaseMap[id]
+		for _, predID := range phase.PredecessorIDs {
+			if dist[predID]+phaseDurations[id] > dist[id] {
+				dist[id] = dist[predID] + phaseDurations[id]
+				prev[id] = predID
+			}
+		}
+	}
+
+	maxDist := 0
+	endPhaseID := ""
+	for id, d := range dist {
+		if d > maxDist {
+			maxDist = d
+			endPhaseID = id
+		}
+	}
+
+	path := []string{}
+	current := endPhaseID
+	for current != "" {
+		path = append([]string{current}, path...)
+		current = prev[current]
+	}
+
+	return &model.CriticalPathResponse{
+		PhaseIDs:       path,
+		TotalDuration:  maxDist,
+		PhaseDurations: phaseDurations,
+	}, nil
+}
+
+func (s *ConstructionService) topologicalSort(phaseMap map[string]*model.ConstructionPhase) ([]string, error) {
+	inDegree := make(map[string]int)
+	for id := range phaseMap {
+		inDegree[id] = 0
+	}
+	for _, phase := range phaseMap {
+		for range phase.PredecessorIDs {
+			inDegree[phase.ID]++
+		}
+	}
+
+	queue := []string{}
+	for id, deg := range inDegree {
+		if deg == 0 {
+			queue = append(queue, id)
+		}
+	}
+
+	result := []string{}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		result = append(result, id)
+
+		for _, phase := range phaseMap {
+			for _, predID := range phase.PredecessorIDs {
+				if predID == id {
+					inDegree[phase.ID]--
+					if inDegree[phase.ID] == 0 {
+						queue = append(queue, phase.ID)
+					}
+				}
+			}
+		}
+	}
+
+	if len(result) != len(phaseMap) {
+		return nil, fmt.Errorf("cycle detected in phase dependencies")
+	}
+
+	return result, nil
 }
 
 func generateConstructionUUID() string {
