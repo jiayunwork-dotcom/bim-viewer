@@ -9,7 +9,7 @@ import (
 )
 
 func (r *PostgresRepo) MigrateAnnotations() error {
-	migrations := []string{
+	tableMigrations := []string{
 		`CREATE TABLE IF NOT EXISTS issues (
 			id VARCHAR(64) PRIMARY KEY,
 			model_id VARCHAR(64) NOT NULL REFERENCES models(id) ON DELETE CASCADE,
@@ -22,9 +22,6 @@ func (r *PostgresRepo) MigrateAnnotations() error {
 			created_at TIMESTAMP DEFAULT NOW(),
 			updated_at TIMESTAMP DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_issues_model_id ON issues(model_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status)`,
-		`CREATE INDEX IF NOT EXISTS idx_issues_due_date ON issues(due_date)`,
 		`CREATE TABLE IF NOT EXISTS annotations (
 			id VARCHAR(64) PRIMARY KEY,
 			model_id VARCHAR(64) NOT NULL REFERENCES models(id) ON DELETE CASCADE,
@@ -57,6 +54,23 @@ func (r *PostgresRepo) MigrateAnnotations() error {
 			mime_type VARCHAR(128) DEFAULT '',
 			created_at TIMESTAMP DEFAULT NOW()
 		)`,
+	}
+	for _, m := range tableMigrations {
+		if _, err := r.db.Exec(m); err != nil {
+			return fmt.Errorf("annotation table migration failed: %w\nSQL: %s", err, m)
+		}
+	}
+
+	if !r.columnExists("annotations", "issue_id") {
+		if _, err := r.db.Exec(`ALTER TABLE annotations ADD COLUMN issue_id VARCHAR(64) REFERENCES issues(id) ON DELETE SET NULL`); err != nil {
+			return fmt.Errorf("failed to add issue_id column: %w", err)
+		}
+	}
+
+	indexMigrations := []string{
+		`CREATE INDEX IF NOT EXISTS idx_issues_model_id ON issues(model_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_issues_due_date ON issues(due_date)`,
 		`CREATE INDEX IF NOT EXISTS idx_annotations_model_id ON annotations(model_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_annotations_issue_id ON annotations(issue_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_annotations_status ON annotations(status)`,
@@ -65,18 +79,9 @@ func (r *PostgresRepo) MigrateAnnotations() error {
 		`CREATE INDEX IF NOT EXISTS idx_annotation_comments_annotation_id ON annotation_comments(annotation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_annotation_attachments_owner ON annotation_attachments(owner_type, owner_id)`,
 	}
-	for _, m := range migrations {
+	for _, m := range indexMigrations {
 		if _, err := r.db.Exec(m); err != nil {
-			return fmt.Errorf("annotation migration failed: %w\nSQL: %s", err, m)
-		}
-	}
-
-	if !r.columnExists("annotations", "issue_id") {
-		if _, err := r.db.Exec(`ALTER TABLE annotations ADD COLUMN issue_id VARCHAR(64) REFERENCES issues(id) ON DELETE SET NULL`); err != nil {
-			return fmt.Errorf("failed to add issue_id column: %w", err)
-		}
-		if _, err := r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_annotations_issue_id ON annotations(issue_id)`); err != nil {
-			return fmt.Errorf("failed to create issue_id index: %w", err)
+			return fmt.Errorf("annotation index migration failed: %w\nSQL: %s", err, m)
 		}
 	}
 

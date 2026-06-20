@@ -106,6 +106,14 @@ func (s *AnnotationService) CreateIssue(req *model.CreateIssueRequest) (*model.I
 		return nil, fmt.Errorf("failed to create issue: %w", err)
 	}
 
+	fullIssue, err := s.GetIssue(issue.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get issue after create: %w", err)
+	}
+	if fullIssue != nil {
+		issue = fullIssue
+	}
+
 	if s.wsHub != nil {
 		s.wsHub.BroadcastToModel(req.ModelID, model.WSMessage{
 			Type:      "issue_created",

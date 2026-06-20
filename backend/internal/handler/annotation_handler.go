@@ -254,6 +254,11 @@ func (h *AnnotationHandler) CreateIssue(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "modelId and name are required")
 		return
 	}
+
+	currentUser := r.Header.Get("X-Current-User")
+	if currentUser != "" {
+		req.Creator = currentUser
+	}
 	if req.Creator == "" {
 		req.Creator = "anonymous"
 	}
