@@ -75,8 +75,16 @@ func main() {
 	api.HandleFunc("/annotations/{id}", annotationHandler.DeleteAnnotation).Methods("DELETE", "OPTIONS")
 	api.HandleFunc("/annotations/{id}/comments", annotationHandler.AddComment).Methods("POST", "OPTIONS")
 	api.HandleFunc("/annotations/{id}/comments", annotationHandler.GetComments).Methods("GET", "OPTIONS")
+	api.HandleFunc("/annotations/comments/{commentId}", annotationHandler.DeleteComment).Methods("DELETE", "OPTIONS")
 	api.HandleFunc("/annotations/attachments/{filename}", annotationHandler.GetAttachment).Methods("GET", "OPTIONS")
 	api.HandleFunc("/annotations/sync", annotationHandler.GetAnnotationsSince).Methods("GET", "OPTIONS")
+
+	api.HandleFunc("/issues", annotationHandler.CreateIssue).Methods("POST", "OPTIONS")
+	api.HandleFunc("/issues", annotationHandler.ListIssues).Methods("GET", "OPTIONS")
+	api.HandleFunc("/issues/due-soon", annotationHandler.GetIssuesDueSoon).Methods("GET", "OPTIONS")
+	api.HandleFunc("/issues/{id}", annotationHandler.GetIssue).Methods("GET", "OPTIONS")
+	api.HandleFunc("/issues/{id}", annotationHandler.UpdateIssue).Methods("PUT", "OPTIONS")
+	api.HandleFunc("/issues/{id}/archive", annotationHandler.ArchiveIssue).Methods("POST", "OPTIONS")
 
 	r.HandleFunc("/ws/annotations", annotationHandler.HandleWebSocket)
 

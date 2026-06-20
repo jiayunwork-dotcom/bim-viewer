@@ -25,9 +25,30 @@ const (
 	AnnotationStatusClosed     AnnotationStatus = "closed"
 )
 
+type IssueStatus string
+
+const (
+	IssueStatusActive   IssueStatus = "active"
+	IssueStatusArchived IssueStatus = "archived"
+)
+
+type Issue struct {
+	ID          string    `json:"id"`
+	ModelID     string    `json:"modelId"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Owner       string    `json:"owner"`
+	DueDate     *time.Time `json:"dueDate,omitempty"`
+	Status      IssueStatus `json:"status"`
+	Creator     string    `json:"creator"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
 type Annotation struct {
 	ID          string            `json:"id"`
 	ModelID     string            `json:"modelId"`
+	IssueID     *string           `json:"issueId,omitempty"`
 	Type        AnnotationType    `json:"type"`
 	ElementID   *string           `json:"elementId,omitempty"`
 	Position    [3]float64        `json:"position"`
@@ -38,6 +59,7 @@ type Annotation struct {
 	Creator     string            `json:"creator"`
 	Attachments []Attachment      `json:"attachments,omitempty"`
 	Comments    []Comment         `json:"comments,omitempty"`
+	Issue       *Issue            `json:"issue,omitempty"`
 	CreatedAt   time.Time         `json:"createdAt"`
 	UpdatedAt   time.Time         `json:"updatedAt"`
 }
@@ -64,6 +86,7 @@ type Attachment struct {
 
 type CreateAnnotationRequest struct {
 	ModelID     string             `json:"modelId"`
+	IssueID     *string            `json:"issueId,omitempty"`
 	Type        AnnotationType     `json:"type"`
 	ElementID   *string            `json:"elementId,omitempty"`
 	Position    [3]float64         `json:"position"`
@@ -74,10 +97,11 @@ type CreateAnnotationRequest struct {
 }
 
 type UpdateAnnotationRequest struct {
-	Priority *AnnotationPriority `json:"priority,omitempty"`
-	Status   *AnnotationStatus   `json:"status,omitempty"`
-	Title    *string             `json:"title,omitempty"`
-	Description *string          `json:"description,omitempty"`
+	Priority    *AnnotationPriority `json:"priority,omitempty"`
+	Status      *AnnotationStatus   `json:"status,omitempty"`
+	Title       *string             `json:"title,omitempty"`
+	Description *string             `json:"description,omitempty"`
+	CurrentUser string              `json:"-"`
 }
 
 type CreateCommentRequest struct {
@@ -85,8 +109,13 @@ type CreateCommentRequest struct {
 	Author  string `json:"author"`
 }
 
+type DeleteCommentRequest struct {
+	CurrentUser string `json:"-"`
+}
+
 type AnnotationListQuery struct {
 	ModelID  string             `json:"modelId"`
+	IssueID  string             `json:"issueId,omitempty"`
 	Priority AnnotationPriority `json:"priority,omitempty"`
 	Status   AnnotationStatus   `json:"status,omitempty"`
 	SortBy   string             `json:"sortBy,omitempty"`
@@ -100,6 +129,30 @@ type AnnotationListResponse struct {
 	Page       int          `json:"page"`
 	PageSize   int          `json:"pageSize"`
 	TotalPages int          `json:"totalPages"`
+}
+
+type CreateIssueRequest struct {
+	ModelID     string    `json:"modelId"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Owner       string    `json:"owner"`
+	DueDate     *string   `json:"dueDate,omitempty"`
+	Creator     string    `json:"creator"`
+}
+
+type UpdateIssueRequest struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Owner       *string `json:"owner,omitempty"`
+	DueDate     *string `json:"dueDate,omitempty"`
+	Status      *string `json:"status,omitempty"`
+	CurrentUser string  `json:"-"`
+}
+
+type IssueListQuery struct {
+	ModelID    string      `json:"modelId"`
+	Status     IssueStatus `json:"status,omitempty"`
+	IncludeDue bool        `json:"includeDue,omitempty"`
 }
 
 type WSMessage struct {

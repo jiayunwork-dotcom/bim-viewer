@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import api from '../utils/api'
+import { ref, computed, watch } from 'vue'
+import api, { getCurrentUsername, setCurrentUsername as saveUsername } from '../utils/api'
 
 export const useAnnotationStore = defineStore('annotation', () => {
   const annotations = ref([])
@@ -15,6 +15,18 @@ export const useAnnotationStore = defineStore('annotation', () => {
   const statusFilter = ref('')
   const sortBy = ref('createdAt')
   const currentModelId = ref(null)
+
+  const currentUser = ref('')
+  const showUsernameDialog = ref(false)
+
+  const issues = ref([])
+  const archivedIssues = ref([])
+  const selectedIssueId = ref('')
+  const issueTab = ref('active')
+  const loadingIssues = ref(false)
+
+  const dueSoonIssueIds = ref(new Set())
+  const dueCheckTimer = ref(null)
 
   const ws = ref(null)
   const wsConnected = ref(false)
@@ -46,6 +58,21 @@ export const useAnnotationStore = defineStore('annotation', () => {
     closed: 'success'
   }
 
+  function initCurrentUser() {
+    const saved = getCurrentUsername()
+    if (saved) {
+      currentUser.value = saved
+    } else {
+      showUsernameDialog.value = true
+    }
+  }
+
+  function setCurrentUsername(username) {
+    currentUser.value = username
+    saveUsername(username)
+    showUsernameDialog.value = false
+  }
+
   const filteredAnnotations = computed(() => {
     let filtered = annotations.value
     if (priorityFilter.value) {
@@ -54,8 +81,45 @@ export const useAnnotationStore = defineStore('annotation', () => {
     if (statusFilter.value) {
       filtered = filtered.filter(a => a.status === statusFilter.value)
     }
+    if (selectedIssueId.value) {
+      filtered = filtered.filter(a => a.issueId === selectedIssueId.value)
+    }
     return filtered
   })
+
+  const activeIssues = computed(() => {
+    return issues.value.filter(i => i.status === 'active')
+  })
+
+  function canEditAnnotation(annotation) {
+    if (!annotation || !currentUser.value) return false
+    return annotation.creator === currentUser.value
+  }
+
+  function canDeleteAnnotation(annotation) {
+    if (!annotation || !currentUser.value) return false
+    return annotation.creator === currentUser.value
+  }
+
+  function canDeleteComment(comment) {
+    if (!comment || !currentUser.value) return false
+    return comment.author === currentUser.value
+  }
+
+  function canEditIssue(issue) {
+    if (!issue || !currentUser.value) return false
+    return issue.creator === currentUser.value
+  }
+
+  function canArchiveIssue(issue) {
+    if (!issue || !currentUser.value) return false
+    return issue.creator === currentUser.value
+  }
+
+  function isAnnotationDueSoon(annotation) {
+    if (!annotation || !annotation.issueId) return false
+    return dueSoonIssueIds.value.has(annotation.issueId)
+  }
 
   function getPinColor(annotation) {
     if (annotation.status === 'closed') return PRIORITY_COLORS[annotation.priority] + '66'
@@ -64,6 +128,107 @@ export const useAnnotationStore = defineStore('annotation', () => {
 
   function getPinOpacity(annotation) {
     return annotation.status === 'closed' ? 0.4 : 1.0
+  }
+
+  async function fetchIssues(modelId, status = '') {
+    if (!modelId) return
+    loadingIssues.value = true
+    try {
+      const params = new URLSearchParams({ modelId })
+      if (status) params.set('status', status)
+      const res = await api.get(`/issues?${params}`)
+      if (status === 'archived') {
+        archivedIssues.value = res.data || []
+      } else {
+        issues.value = res.data || []
+      }
+    } catch (err) {
+      console.error('Failed to fetch issues:', err)
+    } finally {
+      loadingIssues.value = false
+    }
+  }
+
+  async function fetchAllIssues(modelId) {
+    await Promise.all([
+      fetchIssues(modelId, 'active'),
+      fetchIssues(modelId, 'archived')
+    ])
+  }
+
+  async function createIssue(data) {
+    try {
+      const res = await api.post('/issues', {
+        ...data,
+        creator: currentUser.value
+      })
+      const newIssue = res.data
+      issues.value.unshift(newIssue)
+      return newIssue
+    } catch (err) {
+      console.error('Failed to create issue:', err)
+      throw err
+    }
+  }
+
+  async function updateIssue(id, data) {
+    try {
+      const res = await api.put(`/issues/${id}`, data)
+      const updated = res.data
+      const idx = issues.value.findIndex(i => i.id === id)
+      if (idx > -1) {
+        issues.value.splice(idx, 1, updated)
+      }
+      const archivedIdx = archivedIssues.value.findIndex(i => i.id === id)
+      if (archivedIdx > -1) {
+        archivedIssues.value.splice(archivedIdx, 1, updated)
+      }
+      return updated
+    } catch (err) {
+      console.error('Failed to update issue:', err)
+      throw err
+    }
+  }
+
+  async function archiveIssue(id) {
+    try {
+      const res = await api.post(`/issues/${id}/archive`)
+      const archived = res.data
+      issues.value = issues.value.filter(i => i.id !== id)
+      archivedIssues.value.unshift(archived)
+      return archived
+    } catch (err) {
+      console.error('Failed to archive issue:', err)
+      throw err
+    }
+  }
+
+  async function fetchDueSoonIssues(modelId) {
+    if (!modelId) return
+    try {
+      const res = await api.get(`/issues/due-soon?modelId=${modelId}&withinHours=24`)
+      const issues = res.data || []
+      dueSoonIssueIds.value = new Set(issues.map(i => i.id))
+      return issues
+    } catch (err) {
+      console.error('Failed to fetch due soon issues:', err)
+      return []
+    }
+  }
+
+  function startDueDateChecker(modelId) {
+    stopDueDateChecker()
+    fetchDueSoonIssues(modelId)
+    dueCheckTimer.value = setInterval(() => {
+      fetchDueSoonIssues(modelId)
+    }, 60000)
+  }
+
+  function stopDueDateChecker() {
+    if (dueCheckTimer.value) {
+      clearInterval(dueCheckTimer.value)
+      dueCheckTimer.value = null
+    }
   }
 
   async function fetchAnnotations(modelId, resetPage = false) {
@@ -79,6 +244,7 @@ export const useAnnotationStore = defineStore('annotation', () => {
       })
       if (priorityFilter.value) params.set('priority', priorityFilter.value)
       if (statusFilter.value) params.set('status', statusFilter.value)
+      if (selectedIssueId.value) params.set('issueId', selectedIssueId.value)
 
       const res = await api.get(`/annotations?${params}`)
       annotations.value = res.data.items || []
@@ -108,6 +274,7 @@ export const useAnnotationStore = defineStore('annotation', () => {
   async function createAnnotation(formData) {
     creating.value = true
     try {
+      formData.append('creator', currentUser.value || 'anonymous')
       const res = await api.post('/annotations', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       })
@@ -157,6 +324,7 @@ export const useAnnotationStore = defineStore('annotation', () => {
 
   async function addComment(annotationId, formData) {
     try {
+      formData.append('author', currentUser.value || 'anonymous')
       const res = await api.post(`/annotations/${annotationId}/comments`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       })
@@ -173,6 +341,24 @@ export const useAnnotationStore = defineStore('annotation', () => {
       return newComment
     } catch (err) {
       console.error('Failed to add comment:', err)
+      throw err
+    }
+  }
+
+  async function deleteComment(commentId) {
+    try {
+      await api.delete(`/annotations/comments/${commentId}`)
+      if (currentAnnotation.value?.comments) {
+        currentAnnotation.value.comments = currentAnnotation.value.comments.filter(c => c.id !== commentId)
+      }
+      const annIdx = annotations.value.findIndex(a => 
+        a.comments?.some(c => c.id === commentId)
+      )
+      if (annIdx > -1) {
+        annotations.value[annIdx].comments = annotations.value[annIdx].comments.filter(c => c.id !== commentId)
+      }
+    } catch (err) {
+      console.error('Failed to delete comment:', err)
       throw err
     }
   }
@@ -306,6 +492,45 @@ export const useAnnotationStore = defineStore('annotation', () => {
           }
         }
         break
+      case 'comment_deleted':
+        if (msg.payload?.id && msg.payload?.annotationId) {
+          if (currentAnnotation.value?.id === msg.payload.annotationId && currentAnnotation.value.comments) {
+            currentAnnotation.value.comments = currentAnnotation.value.comments.filter(c => c.id !== msg.payload.id)
+          }
+          const annIdx = annotations.value.findIndex(a => a.id === msg.payload.annotationId)
+          if (annIdx > -1 && annotations.value[annIdx].comments) {
+            annotations.value[annIdx].comments = annotations.value[annIdx].comments.filter(c => c.id !== msg.payload.id)
+          }
+        }
+        break
+      case 'issue_created':
+        if (msg.payload && !issues.value.find(i => i.id === msg.payload.id)) {
+          issues.value.unshift(msg.payload)
+        }
+        break
+      case 'issue_updated':
+        if (msg.payload) {
+          const idx = issues.value.findIndex(i => i.id === msg.payload.id)
+          if (idx > -1) {
+            issues.value.splice(idx, 1, { ...issues.value[idx], ...msg.payload })
+          }
+          const archivedIdx = archivedIssues.value.findIndex(i => i.id === msg.payload.id)
+          if (archivedIdx > -1) {
+            archivedIssues.value.splice(archivedIdx, 1, { ...archivedIssues.value[archivedIdx], ...msg.payload })
+          }
+          if (msg.payload.status === 'archived') {
+            issues.value = issues.value.filter(i => i.id !== msg.payload.id)
+            if (!archivedIssues.value.find(i => i.id === msg.payload.id)) {
+              archivedIssues.value.unshift(msg.payload)
+            }
+          } else if (msg.payload.status === 'active') {
+            archivedIssues.value = archivedIssues.value.filter(i => i.id !== msg.payload.id)
+            if (!issues.value.find(i => i.id === msg.payload.id)) {
+              issues.value.unshift(msg.payload)
+            }
+          }
+        }
+        break
       case 'sync_response':
         if (Array.isArray(msg.payload)) {
           for (const ann of msg.payload) {
@@ -342,12 +567,25 @@ export const useAnnotationStore = defineStore('annotation', () => {
     page.value = val
   }
 
+  function setSelectedIssueId(val) {
+    selectedIssueId.value = val
+  }
+
+  function setIssueTab(val) {
+    issueTab.value = val
+  }
+
   function clearAll() {
     annotations.value = []
     currentAnnotation.value = null
     total.value = 0
     page.value = 1
     currentModelId.value = null
+    issues.value = []
+    archivedIssues.value = []
+    selectedIssueId.value = ''
+    dueSoonIssueIds.value = new Set()
+    stopDueDateChecker()
     disconnectWebSocket()
   }
 
@@ -355,16 +593,25 @@ export const useAnnotationStore = defineStore('annotation', () => {
     annotations, currentAnnotation, loading, creating,
     total, page, pageSize, totalPages,
     priorityFilter, statusFilter, sortBy, currentModelId,
+    currentUser, showUsernameDialog,
+    issues, archivedIssues, selectedIssueId, issueTab, loadingIssues,
+    dueSoonIssueIds,
     ws, wsConnected, lastMessageTime,
     PRIORITY_COLORS, PRIORITY_LABELS, STATUS_LABELS, STATUS_TYPES,
-    filteredAnnotations,
+    filteredAnnotations, activeIssues,
+    canEditAnnotation, canDeleteAnnotation, canDeleteComment, canEditIssue, canArchiveIssue,
+    isAnnotationDueSoon,
     getPinColor, getPinOpacity,
+    initCurrentUser, setCurrentUsername,
+    fetchIssues, fetchAllIssues, createIssue, updateIssue, archiveIssue,
+    fetchDueSoonIssues, startDueDateChecker, stopDueDateChecker,
     fetchAnnotations, fetchAnnotation,
     createAnnotation, updateAnnotation, deleteAnnotation,
-    addComment,
+    addComment, deleteComment,
     connectWebSocket, disconnectWebSocket,
     setCurrentAnnotation,
     setPriorityFilter, setStatusFilter, setSortBy, setPage,
+    setSelectedIssueId, setIssueTab,
     clearAll
   }
 })

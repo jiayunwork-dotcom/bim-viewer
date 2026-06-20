@@ -51,6 +51,10 @@ func (h *AnnotationHandler) CreateAnnotation(w http.ResponseWriter, r *http.Requ
 		Creator:     r.FormValue("creator"),
 	}
 
+	if issueID := r.FormValue("issueId"); issueID != "" {
+		req.IssueID = &issueID
+	}
+
 	if elementID := r.FormValue("elementId"); elementID != "" {
 		req.ElementID = &elementID
 	}
@@ -78,7 +82,13 @@ func (h *AnnotationHandler) CreateAnnotation(w http.ResponseWriter, r *http.Requ
 
 	annotation, err := h.annotationSvc.CreateAnnotation(req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create annotation: %v", err))
+		errMsg := err.Error()
+		if errMsg == "issueId is required" || errMsg == "issue not found" || 
+		   errMsg == "issue does not belong to this model" || errMsg == "cannot add annotation to archived issue" {
+			writeError(w, http.StatusBadRequest, errMsg)
+		} else {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create annotation: %v", err))
+		}
 		return
 	}
 
@@ -142,6 +152,9 @@ func (h *AnnotationHandler) ListAnnotations(w http.ResponseWriter, r *http.Reque
 		PageSize: 20,
 	}
 
+	if issueID := r.URL.Query().Get("issueId"); issueID != "" {
+		q.IssueID = issueID
+	}
 	if p := r.URL.Query().Get("priority"); p != "" {
 		q.Priority = model.AnnotationPriority(p)
 	}
@@ -174,6 +187,7 @@ func (h *AnnotationHandler) ListAnnotations(w http.ResponseWriter, r *http.Reque
 func (h *AnnotationHandler) UpdateAnnotation(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
+	currentUser := r.Header.Get("X-Current-User")
 
 	var req model.UpdateAnnotationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -181,8 +195,12 @@ func (h *AnnotationHandler) UpdateAnnotation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	annotation, err := h.annotationSvc.UpdateAnnotation(id, &req)
+	annotation, err := h.annotationSvc.UpdateAnnotation(id, &req, currentUser)
 	if err != nil {
+		if err.Error() == "permission denied: only creator can edit title and description" {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update annotation: %v", err))
 		return
 	}
@@ -196,12 +214,165 @@ func (h *AnnotationHandler) UpdateAnnotation(w http.ResponseWriter, r *http.Requ
 func (h *AnnotationHandler) DeleteAnnotation(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
+	currentUser := r.Header.Get("X-Current-User")
 
-	if err := h.annotationSvc.DeleteAnnotation(id); err != nil {
+	if err := h.annotationSvc.DeleteAnnotation(id, currentUser); err != nil {
+		if err.Error() == "permission denied: only creator can delete annotation" {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete annotation: %v", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *AnnotationHandler) DeleteComment(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	commentID := vars["commentId"]
+	currentUser := r.Header.Get("X-Current-User")
+
+	if err := h.annotationSvc.DeleteComment(commentID, currentUser); err != nil {
+		if err.Error() == "permission denied: only author can delete comment" {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete comment: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *AnnotationHandler) CreateIssue(w http.ResponseWriter, r *http.Request) {
+	var req model.CreateIssueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.ModelID == "" || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "modelId and name are required")
+		return
+	}
+	if req.Creator == "" {
+		req.Creator = "anonymous"
+	}
+
+	issue, err := h.annotationSvc.CreateIssue(&req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create issue: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, issue)
+}
+
+func (h *AnnotationHandler) GetIssue(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	issue, err := h.annotationSvc.GetIssue(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to get issue")
+		return
+	}
+	if issue == nil {
+		writeError(w, http.StatusNotFound, "Issue not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, issue)
+}
+
+func (h *AnnotationHandler) ListIssues(w http.ResponseWriter, r *http.Request) {
+	q := &model.IssueListQuery{
+		ModelID: r.URL.Query().Get("modelId"),
+	}
+
+	if status := r.URL.Query().Get("status"); status != "" {
+		q.Status = model.IssueStatus(status)
+	}
+
+	if q.ModelID == "" {
+		writeError(w, http.StatusBadRequest, "modelId is required")
+		return
+	}
+
+	issues, err := h.annotationSvc.ListIssues(q)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to list issues: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, issues)
+}
+
+func (h *AnnotationHandler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	currentUser := r.Header.Get("X-Current-User")
+
+	var req model.UpdateIssueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	issue, err := h.annotationSvc.UpdateIssue(id, &req, currentUser)
+	if err != nil {
+		if err.Error() == "permission denied: only creator can edit issue" {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update issue: %v", err))
+		return
+	}
+	if issue == nil {
+		writeError(w, http.StatusNotFound, "Issue not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, issue)
+}
+
+func (h *AnnotationHandler) ArchiveIssue(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	currentUser := r.Header.Get("X-Current-User")
+
+	issue, err := h.annotationSvc.ArchiveIssue(id, currentUser)
+	if err != nil {
+		if err.Error() == "permission denied: only creator can edit issue" {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to archive issue: %v", err))
+		return
+	}
+	if issue == nil {
+		writeError(w, http.StatusNotFound, "Issue not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, issue)
+}
+
+func (h *AnnotationHandler) GetIssuesDueSoon(w http.ResponseWriter, r *http.Request) {
+	modelID := r.URL.Query().Get("modelId")
+	if modelID == "" {
+		writeError(w, http.StatusBadRequest, "modelId is required")
+		return
+	}
+
+	withinHours := 24
+	if hStr := r.URL.Query().Get("withinHours"); hStr != "" {
+		if h, err := strconv.Atoi(hStr); err == nil && h > 0 {
+			withinHours = h
+		}
+	}
+
+	issues, err := h.annotationSvc.GetIssuesDueSoon(modelID, withinHours)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to get due soon issues: %v", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, issues)
 }
 
 func (h *AnnotationHandler) AddComment(w http.ResponseWriter, r *http.Request) {

@@ -40,6 +40,9 @@ export class BIMRenderer {
     this.annotationPins = new Map()
     this.onAnnotationClick = null
     this.onAnnotationDblClick = null
+    this.dueSoonAnnotationIds = new Set()
+    this.pulseTime = 0
+    this.pulseSpeed = 0.003
 
     this._init()
   }
@@ -349,6 +352,8 @@ export class BIMRenderer {
     if (this.frameCounter % this.occlusionUpdateInterval === 0) {
       this._performOcclusionCulling()
     }
+
+    this._updatePulseAnimation()
 
     this.renderer.render(this.scene, this.camera)
   }
@@ -1047,10 +1052,16 @@ export class BIMRenderer {
     }
 
     const color = this._getAnnotationColor(annotation.priority, annotation.status)
-    const opacity = annotation.status === 'closed' ? 0.4 : 1.0
+    const baseOpacity = annotation.status === 'closed' ? 0.4 : 1.0
+    const isDueSoon = this.dueSoonAnnotationIds.has(annotation.id) && annotation.status !== 'closed'
 
     const group = new THREE.Group()
-    group.userData = { annotationId: annotation.id, isAnnotationPin: true }
+    group.userData = { 
+      annotationId: annotation.id, 
+      isAnnotationPin: true,
+      baseOpacity,
+      isDueSoon
+    }
 
     const pinHeight = 600
     const headRadius = 200
@@ -1060,32 +1071,33 @@ export class BIMRenderer {
     const stickMat = new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: opacity * 0.8,
+      opacity: baseOpacity * 0.8,
       depthTest: false
     })
     const stick = new THREE.Mesh(stickGeo, stickMat)
     stick.position.y = pinHeight / 2
     stick.renderOrder = 998
+    stick.userData = { opacityFactor: 0.8 }
     group.add(stick)
 
     const headGeo = new THREE.SphereGeometry(headRadius, 16, 16)
     const headMat = new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity,
+      opacity: baseOpacity,
       depthTest: false
     })
     const head = new THREE.Mesh(headGeo, headMat)
     head.position.y = pinHeight + headRadius
     head.renderOrder = 999
-    head.userData = { annotationId: annotation.id, isAnnotationPinHead: true }
+    head.userData = { annotationId: annotation.id, isAnnotationPinHead: true, opacityFactor: 1.0 }
     group.add(head)
 
     const ringGeo = new THREE.RingGeometry(headRadius + 30, headRadius + 60, 32)
     const ringMat = new THREE.MeshBasicMaterial({
       color,
       transparent: true,
-      opacity: opacity * 0.5,
+      opacity: baseOpacity * 0.5,
       depthTest: false,
       side: THREE.DoubleSide
     })
@@ -1093,6 +1105,7 @@ export class BIMRenderer {
     ring.position.y = pinHeight + headRadius
     ring.rotation.x = -Math.PI / 2
     ring.renderOrder = 999
+    ring.userData = { opacityFactor: 0.5 }
     group.add(ring)
 
     group.position.set(annotation.position[0], annotation.position[1], annotation.position[2])
@@ -1120,21 +1133,58 @@ export class BIMRenderer {
     if (!group) return
 
     const color = this._getAnnotationColor(annotation.priority, annotation.status)
-    const opacity = annotation.status === 'closed' ? 0.4 : 1.0
+    const baseOpacity = annotation.status === 'closed' ? 0.4 : 1.0
+    const isDueSoon = this.dueSoonAnnotationIds.has(annotation.id) && annotation.status !== 'closed'
+
+    group.userData.baseOpacity = baseOpacity
+    group.userData.isDueSoon = isDueSoon
 
     group.traverse(child => {
       if (child.isMesh && child.material) {
         child.material.color.setHex(color)
-        child.material.opacity = opacity * (child.userData.isAnnotationPinHead ? 1.0 : 0.8)
+        const factor = child.userData.opacityFactor || 0.8
+        child.material.opacity = baseOpacity * factor
         child.material.needsUpdate = true
       }
     })
+  }
+
+  setDueSoonAnnotations(annotationIds) {
+    this.dueSoonAnnotationIds = new Set(annotationIds)
+    for (const [id, group] of this.annotationPins) {
+      const isDueSoon = this.dueSoonAnnotationIds.has(id)
+      group.userData.isDueSoon = isDueSoon
+    }
+  }
+
+  _updatePulseAnimation() {
+    if (this.dueSoonAnnotationIds.size === 0) return
+
+    this.pulseTime += this.pulseSpeed
+    const pulseFactor = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(this.pulseTime * Math.PI * 2))
+
+    for (const annotationId of this.dueSoonAnnotationIds) {
+      const group = this.annotationPins.get(annotationId)
+      if (!group || !group.userData.isDueSoon) continue
+
+      const baseOpacity = group.userData.baseOpacity || 1.0
+      const currentOpacity = baseOpacity * pulseFactor
+
+      group.traverse(child => {
+        if (child.isMesh && child.material) {
+          const factor = child.userData.opacityFactor || 1.0
+          child.material.opacity = currentOpacity * factor
+          child.material.needsUpdate = true
+        }
+      })
+    }
   }
 
   clearAnnotationPins() {
     for (const [id] of this.annotationPins) {
       this.removeAnnotationPin(id)
     }
+    this.dueSoonAnnotationIds.clear()
   }
 
   _getAnnotationColor(priority, status) {

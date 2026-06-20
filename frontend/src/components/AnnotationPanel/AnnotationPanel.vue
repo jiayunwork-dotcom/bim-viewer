@@ -1,12 +1,116 @@
 <template>
   <div class="annotation-panel">
+    <el-dialog v-model="showUsernameDialog" title="请输入您的用户名" width="400px" :close-on-click-modal="false" :close-on-press-escape="false" show-close>
+      <el-form :model="usernameForm" size="default">
+        <el-form-item label="用户名">
+          <el-input v-model="usernameForm.name" placeholder="请输入您的用户名" @keyup.enter="submitUsername" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button type="primary" @click="submitUsername" :disabled="!usernameForm.name.trim()">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showIssueForm" :title="editingIssue ? '编辑议题' : '创建议题'" width="480px" :close-on-click-modal="false">
+      <el-form :model="issueForm" label-width="80px" size="small">
+        <el-form-item label="名称" required>
+          <el-input v-model="issueForm.name" placeholder="输入议题名称" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="issueForm.description" type="textarea" :rows="3" placeholder="输入描述" />
+        </el-form-item>
+        <el-form-item label="负责人">
+          <el-input v-model="issueForm.owner" placeholder="输入负责人" />
+        </el-form-item>
+        <el-form-item label="截止日期">
+          <el-date-picker
+            v-model="issueForm.dueDate"
+            type="datetime"
+            placeholder="选择截止日期"
+            style="width: 100%"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showIssueForm = false">取消</el-button>
+        <el-button type="primary" @click="submitIssue" :loading="issueSubmitting">{{ editingIssue ? '保存' : '创建' }}</el-button>
+      </template>
+    </el-dialog>
+
     <div v-if="!currentAnnotation" class="annotation-list">
       <div class="panel-header">
         <span class="panel-title">标注管理</span>
-        <el-button type="primary" size="small" @click="showCreateForm = true">
-          <el-icon><Plus /></el-icon> 新建
+        <div class="header-actions">
+          <el-button size="small" @click="showIssueForm = true; resetIssueForm()">
+            <el-icon><FolderAdd /></el-icon> 新建议题
+          </el-button>
+          <el-button type="primary" size="small" @click="showCreateForm = true">
+            <el-icon><Plus /></el-icon> 新建
+          </el-button>
+        </div>
+      </div>
+
+      <div class="issue-filter-bar">
+        <el-select v-model="selectedIssueId" placeholder="选择议题" size="small" style="flex: 1" @change="onIssueChange">
+          <el-option label="全部议题" value="" />
+          <el-option-group label="进行中">
+            <el-option
+              v-for="issue in activeIssues"
+              :key="issue.id"
+              :label="issue.name"
+              :value="issue.id"
+            >
+              <span class="issue-option-name">{{ issue.name }}</span>
+              <span v-if="isIssueDueSoon(issue)" class="issue-due-soon">临期</span>
+            </el-option>
+          </el-option-group>
+        </el-select>
+        <el-button size="small" text @click="showIssueManager = true">
+          <el-icon><Setting /></el-icon> 管理
         </el-button>
       </div>
+
+      <el-dialog v-model="showIssueManager" title="议题管理" width="600px" :close-on-click-modal="false">
+        <el-tabs v-model="issueTab" size="small">
+          <el-tab-pane label="进行中" name="active">
+            <div class="issue-list-manager">
+              <div v-for="issue in issues" :key="issue.id" class="issue-item">
+                <div class="issue-item-header">
+                  <span class="issue-item-name">{{ issue.name }}</span>
+                  <span v-if="isIssueDueSoon(issue)" class="issue-due-soon-badge">临期</span>
+                </div>
+                <div class="issue-item-meta">
+                  <span v-if="issue.owner">负责人: {{ issue.owner }}</span>
+                  <span v-if="issue.dueDate">截止: {{ formatDate(issue.dueDate) }}</span>
+                  <span>创建人: {{ issue.creator }}</span>
+                </div>
+                <div v-if="issue.description" class="issue-item-desc">{{ issue.description }}</div>
+                <div class="issue-item-actions">
+                  <el-button size="small" @click="editIssue(issue)" :disabled="!canEditIssue(issue)">编辑</el-button>
+                  <el-button size="small" type="warning" @click="archiveIssue(issue)" :disabled="!canArchiveIssue(issue)">归档</el-button>
+                </div>
+              </div>
+              <div v-if="issues.length === 0" class="empty-state">暂无进行中的议题</div>
+            </div>
+          </el-tab-pane>
+          <el-tab-pane label="已归档" name="archived">
+            <div class="issue-list-manager">
+              <div v-for="issue in archivedIssues" :key="issue.id" class="issue-item archived">
+                <div class="issue-item-header">
+                  <span class="issue-item-name">{{ issue.name }}</span>
+                </div>
+                <div class="issue-item-meta">
+                  <span v-if="issue.owner">负责人: {{ issue.owner }}</span>
+                  <span>创建人: {{ issue.creator }}</span>
+                </div>
+                <div v-if="issue.description" class="issue-item-desc">{{ issue.description }}</div>
+              </div>
+              <div v-if="archivedIssues.length === 0" class="empty-state">暂无已归档的议题</div>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </el-dialog>
 
       <div class="filter-bar">
         <el-select v-model="priorityFilter" placeholder="优先级" size="small" clearable style="width: 90px" @change="onFilterChange">
@@ -30,7 +134,7 @@
           v-for="ann in filteredAnnotations"
           :key="ann.id"
           class="annotation-item"
-          :class="{ closed: ann.status === 'closed' }"
+          :class="{ closed: ann.status === 'closed', 'due-soon': isAnnotationDueSoon(ann) }"
           @click="openDetail(ann)"
         >
           <div class="ann-header">
@@ -41,6 +145,9 @@
             <el-tag size="small" :type="STATUS_TYPES[ann.status]">{{ STATUS_LABELS[ann.status] }}</el-tag>
             <el-tag size="small" :color="PRIORITY_COLORS[ann.priority]" style="color: #fff; border: none">{{ PRIORITY_LABELS[ann.priority] }}</el-tag>
             <span class="ann-type">{{ ann.type === 'element' ? '构件' : '空间' }}</span>
+          </div>
+          <div v-if="ann.issue" class="ann-issue">
+            <el-icon><Folder /></el-icon> {{ ann.issue.name }}
           </div>
           <div class="ann-footer">
             <span class="ann-creator">{{ ann.creator }}</span>
@@ -95,7 +202,10 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <el-button size="small" type="danger" @click="onDelete">删除</el-button>
+          <el-button v-if="canEditAnnotation(currentAnnotation)" size="small" @click="startEditAnnotation">
+            <el-icon><Edit /></el-icon> 编辑
+          </el-button>
+          <el-button v-if="canDeleteAnnotation(currentAnnotation)" size="small" type="danger" @click="onDelete">删除</el-button>
         </div>
       </div>
 
@@ -106,7 +216,27 @@
           <span class="detail-type">{{ currentAnnotation.type === 'element' ? '构件标注' : '空间标注' }}</span>
           <span class="detail-time">{{ formatTime(currentAnnotation.createdAt) }}</span>
         </div>
+        <div v-if="currentAnnotation.issue" class="detail-issue">
+          <el-icon><Folder /></el-icon>
+          <span>议题: {{ currentAnnotation.issue.name }}</span>
+          <el-tag v-if="isIssueDueSoon(currentAnnotation.issue)" size="small" type="warning">临期</el-tag>
+        </div>
         <p class="detail-description">{{ currentAnnotation.description || '无描述' }}</p>
+
+        <el-dialog v-model="showEditForm" title="编辑标注" width="480px" :close-on-click-modal="false">
+          <el-form :model="editForm" label-width="80px" size="small">
+            <el-form-item label="标题" required>
+              <el-input v-model="editForm.title" placeholder="输入标注标题" />
+            </el-form-item>
+            <el-form-item label="描述">
+              <el-input v-model="editForm.description" type="textarea" :rows="3" placeholder="输入描述" />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="showEditForm = false">取消</el-button>
+            <el-button type="primary" @click="submitEdit" :loading="editSubmitting">保存</el-button>
+          </template>
+        </el-dialog>
 
         <div v-if="currentAnnotation.elementId" class="detail-element">
           <el-tag size="small" type="info">构件: {{ currentAnnotation.elementId }}</el-tag>
@@ -132,7 +262,18 @@
           <div v-for="comment in currentAnnotation.comments || []" :key="comment.id" class="comment-item">
             <div class="comment-header">
               <span class="comment-author">{{ comment.author }}</span>
-              <span class="comment-time">{{ formatTime(comment.createdAt) }}</span>
+              <div class="comment-header-right">
+                <span class="comment-time">{{ formatTime(comment.createdAt) }}</span>
+                <el-button
+                  v-if="canDeleteComment(comment)"
+                  size="small"
+                  text
+                  type="danger"
+                  @click.stop="onDeleteComment(comment)"
+                >
+                  删除
+                </el-button>
+              </div>
             </div>
             <p class="comment-content">{{ comment.content }}</p>
             <div v-if="comment.attachment" class="comment-attachment">
@@ -178,6 +319,16 @@
 
     <el-dialog v-model="showCreateForm" title="新建标注" width="480px" :close-on-click-modal="false">
       <el-form :model="createForm" label-width="80px" size="small">
+        <el-form-item label="议题" required>
+          <el-select v-model="createForm.issueId" placeholder="请选择议题" style="width: 100%">
+            <el-option
+              v-for="issue in activeIssues"
+              :key="issue.id"
+              :label="issue.name"
+              :value="issue.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="类型">
           <el-radio-group v-model="createForm.type">
             <el-radio value="element">构件标注</el-radio>
@@ -199,9 +350,6 @@
             <el-radio value="normal">普通</el-radio>
             <el-radio value="low">低</el-radio>
           </el-radio-group>
-        </el-form-item>
-        <el-form-item label="创建人">
-          <el-input v-model="createForm.creator" placeholder="输入姓名" />
         </el-form-item>
         <el-form-item label="附件">
           <el-upload
@@ -226,9 +374,13 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useAnnotationStore } from '../../stores/annotation'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  Plus, ArrowLeft, Edit, Upload, Picture,
+  Folder, FolderAdd, Setting
+} from '@element-plus/icons-vue'
 
 const props = defineProps({
   modelId: { type: String, default: null },
@@ -245,11 +397,30 @@ const total = computed(() => store.total)
 const totalPages = computed(() => store.totalPages)
 const filteredAnnotations = computed(() => store.filteredAnnotations)
 const currentAnnotation = computed(() => store.currentAnnotation)
+const issues = computed(() => store.issues)
+const archivedIssues = computed(() => store.archivedIssues)
+const activeIssues = computed(() => store.activeIssues)
+const selectedIssueId = computed({
+  get: () => store.selectedIssueId,
+  set: (val) => store.setSelectedIssueId(val)
+})
+const showUsernameDialog = computed({
+  get: () => store.showUsernameDialog,
+  set: (val) => {}
+})
 
 const PRIORITY_COLORS = store.PRIORITY_COLORS
 const PRIORITY_LABELS = store.PRIORITY_LABELS
 const STATUS_LABELS = store.STATUS_LABELS
 const STATUS_TYPES = store.STATUS_TYPES
+
+const canEditAnnotation = (ann) => store.canEditAnnotation(ann)
+const canDeleteAnnotation = (ann) => store.canDeleteAnnotation(ann)
+const canDeleteComment = (comment) => store.canDeleteComment(comment)
+const canEditIssue = (issue) => store.canEditIssue(issue)
+const canArchiveIssue = (issue) => store.canArchiveIssue(issue)
+const isAnnotationDueSoon = (ann) => store.isAnnotationDueSoon(ann)
+const isIssueDueSoon = (issue) => store.dueSoonIssueIds?.has?.(issue.id) || false
 
 const priorityFilter = ref('')
 const statusFilter = ref('')
@@ -264,27 +435,55 @@ const createForm = ref({
   title: '',
   description: '',
   priority: 'normal',
-  creator: ''
+  issueId: ''
 })
 const createFileList = ref([])
+
+const showEditForm = ref(false)
+const editForm = ref({ title: '', description: '' })
+const editSubmitting = ref(false)
 
 const newComment = ref('')
 const commentFileList = ref([])
 const submitting = ref(false)
+
+const showIssueManager = ref(false)
+const issueTab = computed({
+  get: () => store.issueTab,
+  set: (val) => store.setIssueTab(val)
+})
+const showIssueForm = ref(false)
+const editingIssue = ref(null)
+const issueForm = ref({
+  name: '',
+  description: '',
+  owner: '',
+  dueDate: null
+})
+const issueSubmitting = ref(false)
+
+const usernameForm = ref({ name: '' })
+
+onMounted(() => {
+  store.initCurrentUser()
+})
 
 watch(() => props.modelId, (id, oldId) => {
   if (id) {
     if (oldId && oldId !== id && props.renderer) {
       props.renderer.clearAnnotationPins()
     }
+    store.fetchAllIssues(id)
     store.fetchAnnotations(id, true)
     store.connectWebSocket(id)
+    store.startDueDateChecker(id)
   }
 }, { immediate: true })
 
 watch(() => store.annotations, (anns, oldAnns) => {
   if (!props.renderer) return
   updateAnnotationPinsIncremental(anns, oldAnns || [])
+  updateDueSoonPins()
 }, { deep: true })
 
 function updateAnnotationPinsIncremental(newAnns, oldAnns) {
@@ -308,12 +507,28 @@ function updateAnnotationPinsIncremental(newAnns, oldAnns) {
           oldAnn.status !== ann.status ||
           oldAnn.position[0] !== ann.position[0] ||
           oldAnn.position[1] !== ann.position[1] ||
-          oldAnn.position[2] !== ann.position[2]) {
+          oldAnn.position[2] !== ann.position[2] ||
+          isAnnotationDueSoon(oldAnn) !== isAnnotationDueSoon(ann)) {
         props.renderer.updateAnnotationPin(ann)
       }
     }
   }
 }
+
+function updateDueSoonPins() {
+  if (!props.renderer) return
+  const dueSoonIds = []
+  for (const ann of store.annotations) {
+    if (ann.issueId && store.dueSoonIssueIds.has(ann.issueId) && ann.status !== 'closed') {
+      dueSoonIds.push(ann.id)
+    }
+  }
+  props.renderer.setDueSoonAnnotations(dueSoonIds)
+}
+
+watch(() => store.dueSoonIssueIds, () => {
+  updateDueSoonPins()
+}, { deep: true })
 
 watch(() => props.renderer, (r) => {
   if (!r) return
@@ -342,11 +557,13 @@ watch(() => props.renderer, (r) => {
         createForm.value.elementId = ''
         createForm.value.position = [position.x, position.y, position.z]
       }
+      createForm.value.issueId = selectedIssueId.value || (activeIssues.value[0]?.id || '')
     }
   }
 })
 
 onUnmounted(() => {
+  store.stopDueDateChecker()
   store.disconnectWebSocket()
   if (props.renderer) {
     props.renderer.clearAnnotationPins()
@@ -354,6 +571,15 @@ onUnmounted(() => {
     props.renderer.onAnnotationDblClick = null
   }
 })
+
+function submitUsername() {
+  if (!usernameForm.value.name.trim()) return
+  store.setCurrentUsername(usernameForm.value.name.trim())
+}
+
+function onIssueChange() {
+  if (props.modelId) store.fetchAnnotations(props.modelId, true)
+}
 
 function onFilterChange() {
   store.setPriorityFilter(priorityFilter.value)
@@ -390,7 +616,11 @@ async function onStatusCommand(status) {
     }
     ElMessage.success('状态已更新')
   } catch (e) {
-    ElMessage.error('更新失败')
+    if (e.response?.status === 403) {
+      ElMessage.error('无权限修改')
+    } else {
+      ElMessage.error('更新失败')
+    }
   }
 }
 
@@ -403,7 +633,42 @@ async function onPriorityCommand(priority) {
     }
     ElMessage.success('优先级已更新')
   } catch (e) {
-    ElMessage.error('更新失败')
+    if (e.response?.status === 403) {
+      ElMessage.error('无权限修改')
+    } else {
+      ElMessage.error('更新失败')
+    }
+  }
+}
+
+function startEditAnnotation() {
+  if (!currentAnnotation.value) return
+  editForm.value.title = currentAnnotation.value.title
+  editForm.value.description = currentAnnotation.value.description || ''
+  showEditForm.value = true
+}
+
+async function submitEdit() {
+  if (!currentAnnotation.value || !editForm.value.title) {
+    ElMessage.warning('请输入标题')
+    return
+  }
+  editSubmitting.value = true
+  try {
+    await store.updateAnnotation(currentAnnotation.value.id, {
+      title: editForm.value.title,
+      description: editForm.value.description
+    })
+    showEditForm.value = false
+    ElMessage.success('已保存')
+  } catch (e) {
+    if (e.response?.status === 403) {
+      ElMessage.error('无权限修改')
+    } else {
+      ElMessage.error('保存失败')
+    }
+  } finally {
+    editSubmitting.value = false
   }
 }
 
@@ -419,7 +684,21 @@ async function onDelete() {
     closeDetail()
     ElMessage.success('已删除')
   } catch (e) {
-    // cancelled
+    if (e.response?.status === 403) {
+      ElMessage.error('无权限删除')
+    }
+  }
+}
+
+async function onDeleteComment(comment) {
+  try {
+    await ElMessageBox.confirm('确定要删除这条评论吗？', '确认删除', { type: 'warning' })
+    await store.deleteComment(comment.id)
+    ElMessage.success('已删除')
+  } catch (e) {
+    if (e.response?.status === 403) {
+      ElMessage.error('无权限删除')
+    }
   }
 }
 
@@ -432,6 +711,10 @@ async function submitCreate() {
     ElMessage.warning('请输入标题')
     return
   }
+  if (!createForm.value.issueId) {
+    ElMessage.warning('请选择议题')
+    return
+  }
   if (!props.modelId) {
     ElMessage.warning('未选择模型')
     return
@@ -439,11 +722,11 @@ async function submitCreate() {
 
   const formData = new FormData()
   formData.append('modelId', props.modelId)
+  formData.append('issueId', createForm.value.issueId)
   formData.append('type', createForm.value.type)
   formData.append('title', createForm.value.title)
   formData.append('description', createForm.value.description || '')
   formData.append('priority', createForm.value.priority)
-  formData.append('creator', createForm.value.creator || '匿名')
   formData.append('position', JSON.stringify(createForm.value.position))
 
   if (createForm.value.type === 'element' && createForm.value.elementId) {
@@ -467,7 +750,7 @@ async function submitCreate() {
       title: '',
       description: '',
       priority: 'normal',
-      creator: ''
+      issueId: selectedIssueId.value || (activeIssues.value[0]?.id || '')
     }
     createFileList.value = []
     ElMessage.success('标注已创建')
@@ -490,7 +773,6 @@ async function submitComment() {
   submitting.value = true
   const formData = new FormData()
   formData.append('content', newComment.value)
-  formData.append('author', '匿名')
 
   if (commentFileList.value.length > 0) {
     formData.append('attachment', commentFileList.value[0].raw)
@@ -508,6 +790,79 @@ async function submitComment() {
   }
 }
 
+function resetIssueForm() {
+  editingIssue.value = null
+  issueForm.value = {
+    name: '',
+    description: '',
+    owner: '',
+    dueDate: null
+  }
+}
+
+function editIssue(issue) {
+  editingIssue.value = issue
+  issueForm.value = {
+    name: issue.name,
+    description: issue.description || '',
+    owner: issue.owner || '',
+    dueDate: issue.dueDate || null
+  }
+  showIssueForm.value = true
+  showIssueManager.value = false
+}
+
+async function submitIssue() {
+  if (!issueForm.value.name) {
+    ElMessage.warning('请输入议题名称')
+    return
+  }
+  if (!props.modelId) return
+
+  issueSubmitting.value = true
+  try {
+    const data = {
+      modelId: props.modelId,
+      name: issueForm.value.name,
+      description: issueForm.value.description,
+      owner: issueForm.value.owner,
+      dueDate: issueForm.value.dueDate || null
+    }
+    if (editingIssue.value) {
+      await store.updateIssue(editingIssue.value.id, data)
+      ElMessage.success('议题已更新')
+    } else {
+      await store.createIssue(data)
+      ElMessage.success('议题已创建')
+    }
+    showIssueForm.value = false
+    resetIssueForm()
+  } catch (e) {
+    if (e.response?.status === 403) {
+      ElMessage.error('无权限操作')
+    } else {
+      ElMessage.error('操作失败')
+    }
+  } finally {
+    issueSubmitting.value = false
+  }
+}
+
+async function archiveIssue(issue) {
+  try {
+    await ElMessageBox.confirm(`确定要归档议题"${issue.name}"吗？`, '确认归档', { type: 'warning' })
+    await store.archiveIssue(issue.id)
+    if (selectedIssueId.value === issue.id) {
+      store.setSelectedIssueId('')
+    }
+    ElMessage.success('已归档')
+  } catch (e) {
+    if (e.response?.status === 403) {
+      ElMessage.error('无权限归档')
+    }
+  }
+}
+
 function formatTime(t) {
   if (!t) return ''
   const d = new Date(t)
@@ -518,6 +873,13 @@ function formatTime(t) {
   if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`
   const pad = n => String(n).padStart(2, '0')
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function formatDate(t) {
+  if (!t) return ''
+  const d = new Date(t)
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function formatSize(bytes) {
@@ -549,6 +911,87 @@ function formatSize(bytes) {
   font-size: 14px;
   font-weight: 600;
   color: #e0e0e0;
+}
+
+.header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.issue-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.issue-option-name {
+  flex: 1;
+}
+
+.issue-due-soon {
+  color: #e6a23c;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.issue-list-manager {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.issue-item {
+  background: #1e2a45;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid transparent;
+}
+
+.issue-item.archived {
+  opacity: 0.6;
+}
+
+.issue-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.issue-item-name {
+  font-weight: 500;
+  color: #e0e0e0;
+  font-size: 14px;
+}
+
+.issue-due-soon-badge {
+  background: #e6a23c;
+  color: #fff;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.issue-item-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: #8899aa;
+  margin-bottom: 6px;
+}
+
+.issue-item-desc {
+  color: #aabbcc;
+  font-size: 12px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+.issue-item-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .filter-bar {
@@ -584,6 +1027,16 @@ function formatSize(bytes) {
   opacity: 0.6;
 }
 
+.annotation-item.due-soon {
+  border-color: #e6a23c66;
+  animation: pulse-border 2s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: #e6a23c33; }
+  50% { border-color: #e6a23ccc; }
+}
+
 .ann-header {
   display: flex;
   align-items: center;
@@ -610,6 +1063,15 @@ function formatSize(bytes) {
   display: flex;
   gap: 6px;
   align-items: center;
+  margin-bottom: 6px;
+}
+
+.ann-issue {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #8899aa;
   margin-bottom: 6px;
 }
 
@@ -685,6 +1147,15 @@ function formatSize(bytes) {
   margin-bottom: 12px;
 }
 
+.detail-issue {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #8899aa;
+  margin-bottom: 12px;
+}
+
 .detail-description {
   color: #aabbcc;
   line-height: 1.6;
@@ -739,6 +1210,13 @@ function formatSize(bytes) {
   display: flex;
   justify-content: space-between;
   margin-bottom: 4px;
+  align-items: center;
+}
+
+.comment-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .comment-author {
