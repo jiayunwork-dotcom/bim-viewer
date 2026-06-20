@@ -272,20 +272,48 @@ const newComment = ref('')
 const commentFileList = ref([])
 const submitting = ref(false)
 
-watch(() => props.modelId, (id) => {
+watch(() => props.modelId, (id, oldId) => {
   if (id) {
+    if (oldId && oldId !== id && props.renderer) {
+      props.renderer.clearAnnotationPins()
+    }
     store.fetchAnnotations(id, true)
     store.connectWebSocket(id)
   }
 }, { immediate: true })
 
-watch(() => store.annotations, (anns) => {
+watch(() => store.annotations, (anns, oldAnns) => {
   if (!props.renderer) return
-  props.renderer.clearAnnotationPins()
-  for (const ann of anns) {
-    props.renderer.addAnnotationPin(ann)
-  }
+  updateAnnotationPinsIncremental(anns, oldAnns || [])
 }, { deep: true })
+
+function updateAnnotationPinsIncremental(newAnns, oldAnns) {
+  if (!props.renderer) return
+  const existingIds = new Set(props.renderer.annotationPins.keys())
+  const newIds = new Set(newAnns.map(a => a.id))
+
+  for (const id of existingIds) {
+    if (!newIds.has(id)) {
+      props.renderer.removeAnnotationPin(id)
+    }
+  }
+
+  for (const ann of newAnns) {
+    if (!existingIds.has(ann.id)) {
+      props.renderer.addAnnotationPin(ann)
+    } else if (oldAnns.length > 0) {
+      const oldAnn = oldAnns.find(a => a.id === ann.id)
+      if (!oldAnn ||
+          oldAnn.priority !== ann.priority ||
+          oldAnn.status !== ann.status ||
+          oldAnn.position[0] !== ann.position[0] ||
+          oldAnn.position[1] !== ann.position[1] ||
+          oldAnn.position[2] !== ann.position[2]) {
+        props.renderer.updateAnnotationPin(ann)
+      }
+    }
+  }
+}
 
 watch(() => props.renderer, (r) => {
   if (!r) return

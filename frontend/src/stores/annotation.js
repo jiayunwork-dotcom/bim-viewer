@@ -19,6 +19,7 @@ export const useAnnotationStore = defineStore('annotation', () => {
   const ws = ref(null)
   const wsConnected = ref(false)
   const wsReconnectTimer = ref(null)
+  const wsHeartbeatTimer = ref(null)
   const lastMessageTime = ref(null)
 
   const PRIORITY_COLORS = {
@@ -195,6 +196,7 @@ export const useAnnotationStore = defineStore('annotation', () => {
         clearTimeout(wsReconnectTimer.value)
         wsReconnectTimer.value = null
       }
+      startHeartbeat()
       if (lastMessageTime.value) {
         ws.value.send(JSON.stringify({
           type: 'sync_request',
@@ -224,6 +226,7 @@ export const useAnnotationStore = defineStore('annotation', () => {
   }
 
   function disconnectWebSocket() {
+    stopHeartbeat()
     if (ws.value) {
       ws.value.close()
       ws.value = null
@@ -232,6 +235,25 @@ export const useAnnotationStore = defineStore('annotation', () => {
     if (wsReconnectTimer.value) {
       clearTimeout(wsReconnectTimer.value)
       wsReconnectTimer.value = null
+    }
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat()
+    wsHeartbeatTimer.value = setInterval(() => {
+      if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+        ws.value.send(JSON.stringify({
+          type: 'ping',
+          timestamp: new Date().toISOString()
+        }))
+      }
+    }, 30000)
+  }
+
+  function stopHeartbeat() {
+    if (wsHeartbeatTimer.value) {
+      clearInterval(wsHeartbeatTimer.value)
+      wsHeartbeatTimer.value = null
     }
   }
 

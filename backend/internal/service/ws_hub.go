@@ -142,9 +142,9 @@ func (c *WSClient) ReadPump(repo interface{ GetAnnotationsByModelSince(modelID s
 		c.Conn.Close()
 	}()
 
-	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.Conn.SetReadDeadline(time.Now().Add(300 * time.Second))
 	c.Conn.SetPongHandler(func(string) error {
-		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		c.Conn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		return nil
 	})
 
@@ -159,21 +159,29 @@ func (c *WSClient) ReadPump(repo interface{ GetAnnotationsByModelSince(modelID s
 			continue
 		}
 
-		if msgType, ok := msg["type"].(string); ok && msgType == "sync_request" {
-			if sinceStr, ok := msg["since"].(string); ok {
-				since, err := time.Parse(time.RFC3339, sinceStr)
-				if err == nil {
-					annotations, err := repo.GetAnnotationsByModelSince(c.ModelID, since)
+		if msgType, ok := msg["type"].(string); ok {
+			if msgType == "sync_request" {
+				if sinceStr, ok := msg["since"].(string); ok {
+					since, err := time.Parse(time.RFC3339, sinceStr)
 					if err == nil {
-						data, _ := json.Marshal(model.WSMessage{
-							Type:      "sync_response",
-							ModelID:   c.ModelID,
-							Payload:   annotations,
-							Timestamp: time.Now(),
-						})
-						c.Conn.WriteMessage(websocket.TextMessage, data)
+						annotations, err := repo.GetAnnotationsByModelSince(c.ModelID, since)
+						if err == nil {
+							data, _ := json.Marshal(model.WSMessage{
+								Type:      "sync_response",
+								ModelID:   c.ModelID,
+								Payload:   annotations,
+								Timestamp: time.Now(),
+							})
+							c.Conn.WriteMessage(websocket.TextMessage, data)
+						}
 					}
 				}
+			} else if msgType == "ping" {
+				data, _ := json.Marshal(map[string]interface{}{
+					"type":      "pong",
+					"timestamp": time.Now().Format(time.RFC3339),
+				})
+				c.Conn.WriteMessage(websocket.TextMessage, data)
 			}
 		}
 	}

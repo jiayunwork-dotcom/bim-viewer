@@ -57,10 +57,10 @@ func (r *PostgresRepo) MigrateAnnotations() error {
 }
 
 func (r *PostgresRepo) CreateAnnotation(a *model.Annotation) error {
-	positionStr := fmt.Sprintf(`[%f,%f,%f]`, a.Position[0], a.Position[1], a.Position[2])
+	positionStr := fmt.Sprintf(`{%f,%f,%f}`, a.Position[0], a.Position[1], a.Position[2])
 	_, err := r.db.Exec(
 		`INSERT INTO annotations (id, model_id, type, element_id, position, title, description, priority, status, creator, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())`,
+		 VALUES ($1, $2, $3, $4, $5::DOUBLE PRECISION[3], $6, $7, $8, $9, $10, NOW(), NOW())`,
 		a.ID, a.ModelID, string(a.Type), a.ElementID, positionStr,
 		a.Title, a.Description, string(a.Priority), string(a.Status), a.Creator,
 	)
@@ -84,24 +84,24 @@ func (r *PostgresRepo) ListAnnotations(q *model.AnnotationListQuery) ([]*model.A
 	var args []interface{}
 	argIdx := 1
 
-	conditions = append(conditions, fmt.Sprintf("model_id = $%d", argIdx))
+	conditions = append(conditions, fmt.Sprintf("a.model_id = $%d", argIdx))
 	args = append(args, q.ModelID)
 	argIdx++
 
 	if q.Priority != "" {
-		conditions = append(conditions, fmt.Sprintf("priority = $%d", argIdx))
+		conditions = append(conditions, fmt.Sprintf("a.priority = $%d", argIdx))
 		args = append(args, string(q.Priority))
 		argIdx++
 	}
 	if q.Status != "" {
-		conditions = append(conditions, fmt.Sprintf("status = $%d", argIdx))
+		conditions = append(conditions, fmt.Sprintf("a.status = $%d", argIdx))
 		args = append(args, string(q.Status))
 		argIdx++
 	}
 
 	whereClause := strings.Join(conditions, " AND ")
 
-	countRow := r.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM annotations WHERE %s", whereClause), args...)
+	countRow := r.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM annotations a WHERE %s", whereClause), args...)
 	var total int
 	if err := countRow.Scan(&total); err != nil {
 		return nil, 0, err
@@ -133,8 +133,8 @@ func (r *PostgresRepo) ListAnnotations(q *model.AnnotationListQuery) ([]*model.A
 		)
 	} else {
 		query = fmt.Sprintf(
-			`SELECT id, model_id, type, element_id, position, title, description, priority, status, creator, created_at, updated_at
-			 FROM annotations
+			`SELECT a.id, a.model_id, a.type, a.element_id, a.position, a.title, a.description, a.priority, a.status, a.creator, a.created_at, a.updated_at
+			 FROM annotations a
 			 WHERE %s
 			 ORDER BY %s %s
 			 LIMIT $%d OFFSET $%d`,
@@ -397,7 +397,7 @@ func (r *PostgresRepo) scanAnnotationFromRows(rows *sql.Rows) (*model.Annotation
 }
 
 func parsePosition(s string, target *[3]float64) {
-	s = strings.Trim(s, "[]")
+	s = strings.Trim(s, "[]{}")
 	parts := strings.Split(s, ",")
 	for i := 0; i < 3 && i < len(parts); i++ {
 		fmt.Sscanf(strings.TrimSpace(parts[i]), "%f", &target[i])
